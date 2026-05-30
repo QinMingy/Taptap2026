@@ -41,12 +41,24 @@ local function LoadSkinsConfig()
             legColor = "#32323CFF",
             shoeColor = "#50505AFF",
         },
+        {
+            name = "mgz",
+            headImage = "image/Charactor/mgz/head_mgz.png",
+            torsoImage = "image/Charactor/mgz/body_mgz.png",
+            armColor = "#FFFFFFFF",
+            handColor = "#F5D2AAFF",
+            legColor = "#3A4A5CFF",
+            shoeColor = "#2A3A4CFF",
+        },
     }
 end
 
 --- 编辑器 Transform 数据（运行时从 assets/skin-editor.json 读取）
 local function LoadSkinEditorConfig()
     local default = {
+        playerScale = 1.0,
+        capsuleRadius = 0.3,
+        capsuleHeight = 1.0,
         headTransform = { scale = 1.0, offsetX = 0, offsetY = 0, rotation = 0 },
         torsoTransform = { scale = 1.0, offsetX = 0, offsetY = 0, rotation = 0 },
         armTransform = { offsetX = 0, offsetY = 0, spacing = 0 },
@@ -71,6 +83,9 @@ local function LoadSkinEditorConfig()
     local ok, data = pcall(cjson.decode, jsonStr)
     if not ok or not data then return default end
     return {
+        playerScale = data.playerScale or default.playerScale,
+        capsuleRadius = data.capsuleRadius or default.capsuleRadius,
+        capsuleHeight = data.capsuleHeight or default.capsuleHeight,
         headTransform = data.headTransform or default.headTransform,
         torsoTransform = data.torsoTransform or default.torsoTransform,
         armTransform = data.armTransform or default.armTransform,
@@ -83,11 +98,16 @@ local skinsData_ = {}     -- 从 JSON 解析的原始数据
 local skinsRuntime_ = {}  -- 运行时数据（含 NanoVG 图片句柄）
 local showCollisionDebug_ = false  -- 是否显示碰撞体线框
 
+-- 角色物理/缩放参数（从 skin-editor.json 加载）
+local playerScale_ = 1.0
+local capsuleRadius_ = 0.3
+local capsuleHeight_ = 1.0
+
 -- ============================================================================
 -- 游戏配置
 -- ============================================================================
 local CONFIG = {
-    Title = "Photo Rush - 三人抓拍",
+    Title = "Photo Rush - 团队抓拍",
     Gravity = 20.0,
     OrthoSize = 10.8,     -- 固定正交尺寸(匹配1920x1080设计)
 
@@ -100,6 +120,7 @@ local CONFIG = {
     PlayerRadius = 0.4,
     PlayerSpeed = 6.0,
     PlayerJumpSpeed = 11.0,
+    JumpCutMultiplier = 0.4,  -- 松开跳跃键时，上升速度乘以此系数（越小截断越狠）
 
     -- 拍照区域
     PhotoWidth = 4.0,       -- 拍照区域宽度(400px / 1920 * 19.2)
@@ -118,22 +139,29 @@ local PLAYERS = {
         name = "P1",
         color = {220, 60, 60, 255},       -- 红色（备用/名牌色）
         keys = {left = KEY_Q, jump = KEY_W, right = KEY_E},
-        spawnX = -4,
+        spawnX = -6,
         skinIndex = 1,
     },
     {
         name = "P2",
         color = {60, 200, 60, 255},       -- 绿色
         keys = {left = KEY_A, jump = KEY_S, right = KEY_D},
-        spawnX = 0,
+        spawnX = -2,
         skinIndex = 1,
     },
     {
         name = "P3",
         color = {60, 100, 220, 255},      -- 蓝色
         keys = {left = KEY_Z, jump = KEY_X, right = KEY_C},
-        spawnX = 4,
-        skinIndex = 1,
+        spawnX = 2,
+        skinIndex = 2,
+    },
+    {
+        name = "P4",
+        color = {220, 160, 40, 255},      -- 橙黄色
+        keys = {left = KEY_U, jump = KEY_I, right = KEY_O},
+        spawnX = 6,
+        skinIndex = 2,
     },
 }
 
@@ -149,6 +177,13 @@ local nvg_ = nil
 
 -- 玩家状态
 local players_ = {}  -- {node, body, onGround, groundContacts, score, facing, animTime, isMoving, velY}
+
+-- 队伍系统
+local teams_ = {
+    [1] = { name = "蓝队", color = {80, 140, 255, 255}, members = {}, score = 0 },
+    [2] = { name = "红队", color = {255, 90, 80, 255}, members = {}, score = 0 },
+}
+local playerTeam_ = {}  -- playerTeam_[playerIndex] = teamIndex (1 or 2)
 
 -- 拍照区域状态
 local photoZone_ = {
@@ -217,6 +252,7 @@ local cameraZoomed_ = false
 -- 皮肤编辑器状态
 local skinEditorOpen_ = false
 local skinEditorPanel_ = nil
+local skinEditorAnimTime_ = 0  -- 预览动画计时器
 
 -- 编辑器菜单状态
 local editorMenuOpen_ = false
@@ -250,6 +286,7 @@ function Start()
     CreateScene()
     CreateWorld()
     CreatePlayers()
+    AssignTeams()
     CreateUI()
     CreateSkinEditor()
     CreateTerrainEditor()
@@ -268,8 +305,8 @@ function Start()
     SubscribeToEvent("PhysicsUpdateContact2D", "HandleUpdateContact")
 
 
-    print("=== Photo Rush 三人抓拍游戏启动 ===")
-    print("P1(红): Q左 W跳 E右 | P2(绿): A左 S跳 D右 | P3(蓝): Z左 X跳 C右")
+    print("=== Photo Rush 四人团队抓拍游戏启动 ===")
+    print("P1(红): Q左 W跳 E右 | P2(绿): A左 S跳 D右 | P3(蓝): Z左 X跳 C右 | P4(橙): U左 I跳 O右")
 end
 
 --- 解析 transform 字段，提供默认值
@@ -288,6 +325,11 @@ function LoadSkins()
     skinsData_ = LoadSkinsConfig()
     local editorCfg = LoadSkinEditorConfig()
     skinsRuntime_ = {}
+
+    -- 更新全局物理/缩放参数
+    playerScale_ = editorCfg.playerScale
+    capsuleRadius_ = editorCfg.capsuleRadius
+    capsuleHeight_ = editorCfg.capsuleHeight
 
     -- 合并 editor transform 到 skinsData
     for _, skin in ipairs(skinsData_) do
@@ -357,105 +399,141 @@ function CreateSkinEditor()
         id = "skinEditor",
         position = "absolute",
         top = 50, right = 10,
-        width = 260,
         backgroundColor = {20, 20, 30, 220},
         borderRadius = 8,
         padding = 10,
-        gap = 4,
+        gap = 6,
         children = {
             UI.Label { text = "Skin Editor (Tab 关闭)", fontSize = 14, fontColor = {255, 220, 100, 255} },
-            UI.Label { text = "── 头部 ──", fontSize = 12, fontColor = {150, 200, 255, 255} },
-            MakeSlider("H.Scale", 0.2, 3.0, skin.headTransform.scale, 0.1, function(self, v)
-                skin.headTransform.scale = v; updateVal("H.Scale", v)
-            end),
-            MakeSlider("H.OffX", -30, 30, skin.headTransform.offsetX, 1, function(self, v)
-                skin.headTransform.offsetX = v; updateVal("H.OffX", v)
-            end),
-            MakeSlider("H.OffY", -30, 30, skin.headTransform.offsetY, 1, function(self, v)
-                skin.headTransform.offsetY = v; updateVal("H.OffY", v)
-            end),
-            MakeSlider("H.Rot", -180, 180, skin.headTransform.rotation, 1, function(self, v)
-                skin.headTransform.rotation = v; updateVal("H.Rot", v)
-            end),
-            UI.Label { text = "── 躯干 ──", fontSize = 12, fontColor = {150, 200, 255, 255} },
-            MakeSlider("T.Scale", 0.2, 3.0, skin.torsoTransform.scale, 0.1, function(self, v)
-                skin.torsoTransform.scale = v; updateVal("T.Scale", v)
-            end),
-            MakeSlider("T.OffX", -30, 30, skin.torsoTransform.offsetX, 1, function(self, v)
-                skin.torsoTransform.offsetX = v; updateVal("T.OffX", v)
-            end),
-            MakeSlider("T.OffY", -30, 30, skin.torsoTransform.offsetY, 1, function(self, v)
-                skin.torsoTransform.offsetY = v; updateVal("T.OffY", v)
-            end),
-            MakeSlider("T.Rot", -180, 180, skin.torsoTransform.rotation, 1, function(self, v)
-                skin.torsoTransform.rotation = v; updateVal("T.Rot", v)
-            end),
-            -- 手臂偏移
-            MakeSlider("A.OffX", -30, 30, skin.armTransform.offsetX, 1, function(self, v)
-                skin.armTransform.offsetX = v; updateVal("A.OffX", v)
-            end),
-            MakeSlider("A.OffY", -30, 30, skin.armTransform.offsetY, 1, function(self, v)
-                skin.armTransform.offsetY = v; updateVal("A.OffY", v)
-            end),
-            MakeSlider("A.Gap", -20, 20, skin.armTransform.spacing, 1, function(self, v)
-                skin.armTransform.spacing = v; updateVal("A.Gap", v)
-            end),
-            -- 腿部偏移
-            MakeSlider("L.OffX", -30, 30, skin.legTransform.offsetX, 1, function(self, v)
-                skin.legTransform.offsetX = v; updateVal("L.OffX", v)
-            end),
-            MakeSlider("L.OffY", -30, 30, skin.legTransform.offsetY, 1, function(self, v)
-                skin.legTransform.offsetY = v; updateVal("L.OffY", v)
-            end),
-            MakeSlider("L.Gap", -20, 20, skin.legTransform.spacing, 1, function(self, v)
-                skin.legTransform.spacing = v; updateVal("L.Gap", v)
-            end),
-            -- 碰撞体线框显示
+            -- 双列布局：控制 + 躯干
             UI.Panel {
-                flexDirection = "row", alignItems = "center", gap = 8, height = 30,
+                flexDirection = "row", gap = 10,
                 children = {
-                    UI.Label { text = "显示碰撞体", fontSize = 12, fontColor = {200, 200, 200, 255} },
-                    UI.Toggle {
-                        value = showCollisionDebug_,
-                        onChange = function(self, v)
-                            showCollisionDebug_ = v
-                        end,
+                    -- ===== 左列：角色 + 头部 + 手臂 + 腿部 =====
+                    UI.Panel {
+                        width = 240, gap = 4,
+                        children = {
+                            UI.Label { text = "── 角色 ──", fontSize = 12, fontColor = {150, 200, 255, 255} },
+                            MakeSlider("P.Scale", 0.5, 2.0, playerScale_, 0.1, function(self, v)
+                                playerScale_ = v; updateVal("P.Scale", v)
+                            end),
+                            MakeSlider("Cap.R", 0.1, 0.8, capsuleRadius_, 0.05, function(self, v)
+                                capsuleRadius_ = v; updateVal("Cap.R", v)
+                            end),
+                            MakeSlider("Cap.H", 0.4, 2.0, capsuleHeight_, 0.05, function(self, v)
+                                capsuleHeight_ = v; updateVal("Cap.H", v)
+                            end),
+                            UI.Label { text = "── 头部 ──", fontSize = 12, fontColor = {150, 200, 255, 255} },
+                            MakeSlider("H.Scale", 0.2, 3.0, skin.headTransform.scale, 0.1, function(self, v)
+                                skin.headTransform.scale = v; updateVal("H.Scale", v)
+                            end),
+                            MakeSlider("H.OffX", -30, 30, skin.headTransform.offsetX, 1, function(self, v)
+                                skin.headTransform.offsetX = v; updateVal("H.OffX", v)
+                            end),
+                            MakeSlider("H.OffY", -30, 30, skin.headTransform.offsetY, 1, function(self, v)
+                                skin.headTransform.offsetY = v; updateVal("H.OffY", v)
+                            end),
+                            MakeSlider("H.Rot", -180, 180, skin.headTransform.rotation, 1, function(self, v)
+                                skin.headTransform.rotation = v; updateVal("H.Rot", v)
+                            end),
+                            UI.Label { text = "── 手臂 ──", fontSize = 12, fontColor = {150, 200, 255, 255} },
+                            MakeSlider("A.OffX", -30, 30, skin.armTransform.offsetX, 1, function(self, v)
+                                skin.armTransform.offsetX = v; updateVal("A.OffX", v)
+                            end),
+                            MakeSlider("A.OffY", -30, 30, skin.armTransform.offsetY, 1, function(self, v)
+                                skin.armTransform.offsetY = v; updateVal("A.OffY", v)
+                            end),
+                            MakeSlider("A.Gap", -20, 20, skin.armTransform.spacing, 1, function(self, v)
+                                skin.armTransform.spacing = v; updateVal("A.Gap", v)
+                            end),
+                            UI.Label { text = "── 腿部 ──", fontSize = 12, fontColor = {150, 200, 255, 255} },
+                            MakeSlider("L.OffX", -30, 30, skin.legTransform.offsetX, 1, function(self, v)
+                                skin.legTransform.offsetX = v; updateVal("L.OffX", v)
+                            end),
+                            MakeSlider("L.OffY", -30, 30, skin.legTransform.offsetY, 1, function(self, v)
+                                skin.legTransform.offsetY = v; updateVal("L.OffY", v)
+                            end),
+                            MakeSlider("L.Gap", -20, 20, skin.legTransform.spacing, 1, function(self, v)
+                                skin.legTransform.spacing = v; updateVal("L.Gap", v)
+                            end),
+                        }
                     },
+                    -- ===== 右列：躯干 =====
+                    UI.Panel {
+                        width = 240, gap = 4,
+                        children = {
+                            UI.Label { text = "── 躯干 ──", fontSize = 12, fontColor = {150, 200, 255, 255} },
+                            MakeSlider("T.Scale", 0.2, 3.0, skin.torsoTransform.scale, 0.1, function(self, v)
+                                skin.torsoTransform.scale = v; updateVal("T.Scale", v)
+                            end),
+                            MakeSlider("T.OffX", -30, 30, skin.torsoTransform.offsetX, 1, function(self, v)
+                                skin.torsoTransform.offsetX = v; updateVal("T.OffX", v)
+                            end),
+                            MakeSlider("T.OffY", -30, 30, skin.torsoTransform.offsetY, 1, function(self, v)
+                                skin.torsoTransform.offsetY = v; updateVal("T.OffY", v)
+                            end),
+                            MakeSlider("T.Rot", -180, 180, skin.torsoTransform.rotation, 1, function(self, v)
+                                skin.torsoTransform.rotation = v; updateVal("T.Rot", v)
+                            end),
+                        }
+                    },
+
                 }
             },
-            -- 复制配置到剪贴板（JSON 格式，匹配 docs/skin-editor.json）
-            UI.Button {
-                text = "复制配置", variant = "primary", height = 30,
-                onClick = function()
-                    local ht = skin.headTransform
-                    local tt = skin.torsoTransform
-                    local at = skin.armTransform
-                    local lt = skin.legTransform
-                    local content = string.format(
-                        '{\n'
-                        .. '  "headTransform": { "scale": %.1f, "offsetX": %g, "offsetY": %g, "rotation": %g },\n'
-                        .. '  "torsoTransform": { "scale": %.1f, "offsetX": %g, "offsetY": %g, "rotation": %g },\n'
-                        .. '  "armTransform": { "offsetX": %g, "offsetY": %g, "spacing": %g },\n'
-                        .. '  "legTransform": { "offsetX": %g, "offsetY": %g, "spacing": %g }\n'
-                        .. '}\n',
-                        ht.scale, ht.offsetX, ht.offsetY, ht.rotation,
-                        tt.scale, tt.offsetX, tt.offsetY, tt.rotation,
-                        at.offsetX, at.offsetY, at.spacing,
-                        lt.offsetX, lt.offsetY, lt.spacing
-                    )
-                    -- 保存到用户沙箱文件（下次运行自动加载）
-                    local saveFile = File("skin-editor.json", FILE_WRITE)
-                    if saveFile:IsOpen() then
-                        saveFile:WriteString(content)
-                        saveFile:Close()
-                        print("[SkinEditor] Config saved to skin-editor.json")
-                    end
-                    -- 写入系统剪贴板
-                    ui.useSystemClipboard = true
-                    ui:SetClipboardText(content)
-                    -- 弹窗作为视觉反馈 + WASM 环境后备
-                    ShowExportPopup(content)
-                end
+            -- 底部操作区
+            UI.Panel {
+                flexDirection = "row", alignItems = "center", gap = 12,
+                children = {
+                    UI.Panel {
+                        flexDirection = "row", alignItems = "center", gap = 8,
+                        children = {
+                            UI.Label { text = "显示碰撞体", fontSize = 12, fontColor = {200, 200, 200, 255} },
+                            UI.Toggle {
+                                value = showCollisionDebug_,
+                                onChange = function(self, v)
+                                    showCollisionDebug_ = v
+                                end,
+                            },
+                        }
+                    },
+                    UI.Button {
+                        text = "保存配置", variant = "primary", height = 30,
+                        onClick = function()
+                            local ht = skin.headTransform
+                            local tt = skin.torsoTransform
+                            local at = skin.armTransform
+                            local lt = skin.legTransform
+                            local content = string.format(
+                                '{\n'
+                                .. '  "playerScale": %.2f,\n'
+                                .. '  "capsuleRadius": %.2f,\n'
+                                .. '  "capsuleHeight": %.2f,\n'
+                                .. '  "headTransform": { "scale": %.1f, "offsetX": %g, "offsetY": %g, "rotation": %g },\n'
+                                .. '  "torsoTransform": { "scale": %.1f, "offsetX": %g, "offsetY": %g, "rotation": %g },\n'
+                                .. '  "armTransform": { "offsetX": %g, "offsetY": %g, "spacing": %g },\n'
+                                .. '  "legTransform": { "offsetX": %g, "offsetY": %g, "spacing": %g }\n'
+                                .. '}\n',
+                                playerScale_, capsuleRadius_, capsuleHeight_,
+                                ht.scale, ht.offsetX, ht.offsetY, ht.rotation,
+                                tt.scale, tt.offsetX, tt.offsetY, tt.rotation,
+                                at.offsetX, at.offsetY, at.spacing,
+                                lt.offsetX, lt.offsetY, lt.spacing
+                            )
+                            -- 保存到用户沙箱文件（下次运行自动加载）
+                            local saveFile = File("skin-editor.json", FILE_WRITE)
+                            if saveFile:IsOpen() then
+                                saveFile:WriteString(content)
+                                saveFile:Close()
+                                print("[SkinEditor] Config saved to skin-editor.json")
+                            end
+                            -- 写入系统剪贴板
+                            ui.useSystemClipboard = true
+                            ui:SetClipboardText(content)
+                            -- 弹窗作为视觉反馈 + WASM 环境后备
+                            ShowExportPopup(content)
+                        end
+                    },
+                }
             },
         }
     }
@@ -1024,19 +1102,46 @@ function CreatePlayers()
         body.linearDamping = 0.0
         body.gravityScale = 1.0
 
-        -- 主碰撞体(圆形)
-        local bodyShape = node:CreateComponent("CollisionCircle2D")
-        bodyShape.radius = CONFIG.PlayerRadius
-        bodyShape.density = 1.0
-        bodyShape.friction = 0.0
-        bodyShape.restitution = 0.0
-        bodyShape.categoryBits = 2
-        bodyShape.maskBits = 0xFFFF
+        -- 胶囊碰撞体（Box + 2 Circle 组合）
+        local capR = capsuleRadius_ * playerScale_
+        local capH = capsuleHeight_ * playerScale_
+        local boxH = capH - capR * 2  -- 矩形中间部分高度
+        if boxH < 0.01 then boxH = 0.01 end
 
-        -- 脚底传感器
+        -- 中间矩形
+        local bodyBox = node:CreateComponent("CollisionBox2D")
+        bodyBox.size = Vector2(capR * 2, boxH)
+        bodyBox.center = Vector2(0, 0)
+        bodyBox.density = 1.0
+        bodyBox.friction = 0.0
+        bodyBox.restitution = 0.0
+        bodyBox.categoryBits = 2
+        bodyBox.maskBits = 0xFFFF
+
+        -- 上半圆
+        local topCap = node:CreateComponent("CollisionCircle2D")
+        topCap.radius = capR
+        topCap.center = Vector2(0, boxH / 2)
+        topCap.density = 1.0
+        topCap.friction = 0.0
+        topCap.restitution = 0.0
+        topCap.categoryBits = 2
+        topCap.maskBits = 0xFFFF
+
+        -- 下半圆
+        local bottomCap = node:CreateComponent("CollisionCircle2D")
+        bottomCap.radius = capR
+        bottomCap.center = Vector2(0, -boxH / 2)
+        bottomCap.density = 1.0
+        bottomCap.friction = 0.0
+        bottomCap.restitution = 0.0
+        bottomCap.categoryBits = 2
+        bottomCap.maskBits = 0xFFFF
+
+        -- 脚底传感器（胶囊底部）
         local footSensor = node:CreateComponent("CollisionCircle2D")
-        footSensor.radius = CONFIG.PlayerRadius * 0.6
-        footSensor.center = Vector2(0, -CONFIG.PlayerRadius * 0.9)
+        footSensor.radius = capR * 0.6
+        footSensor.center = Vector2(0, -(capH / 2) * 0.9)
         footSensor.trigger = true
         footSensor.categoryBits = 4
         footSensor.maskBits = 1
@@ -1052,7 +1157,48 @@ function CreatePlayers()
             animTime = 0,    -- 动画计时器
             isMoving = false, -- 是否在移动
             velY = 0,        -- 纵向速度(用于跳跃动画)
+            jumping = false, -- 是否正在跳跃（用于可变跳跃高度）
         }
+    end
+end
+
+-- ============================================================================
+-- 队伍分配
+-- ============================================================================
+function AssignTeams()
+    -- 随机将玩家分配到两个队伍（每队人数尽量均等）
+    local indices = {}
+    for i = 1, #PLAYERS do
+        indices[i] = i
+    end
+    -- Fisher-Yates 洗牌
+    for i = #indices, 2, -1 do
+        local j = math.random(1, i)
+        indices[i], indices[j] = indices[j], indices[i]
+    end
+
+    -- 前一半进队伍1，后一半进队伍2
+    teams_[1].members = {}
+    teams_[2].members = {}
+    teams_[1].score = 0
+    teams_[2].score = 0
+    playerTeam_ = {}
+
+    local half = math.floor(#PLAYERS / 2)
+    for idx = 1, #indices do
+        local pi = indices[idx]
+        local teamIdx = (idx <= half) and 1 or 2
+        playerTeam_[pi] = teamIdx
+        table.insert(teams_[teamIdx].members, pi)
+    end
+
+    -- 打印队伍分配结果
+    for t = 1, 2 do
+        local names = {}
+        for _, pi in ipairs(teams_[t].members) do
+            table.insert(names, PLAYERS[pi].name)
+        end
+        print(string.format("[Teams] %s: %s", teams_[t].name, table.concat(names, ", ")))
     end
 end
 
@@ -1067,15 +1213,69 @@ function CreateUI()
         scale = UI.Scale.DEFAULT,
     })
 
-    local children = {}
-    for i, pdata in ipairs(PLAYERS) do
-        table.insert(children, UI.Label {
-            id = "score" .. i,
-            text = pdata.name .. ": 0",
-            fontSize = 18,
-            fontColor = pdata.color,
-            fontWeight = "bold",
+    -- 构建左队（队伍1）成员列表
+    local team1Children = {}
+    for _, pi in ipairs(teams_[1].members) do
+        local pdata = PLAYERS[pi]
+        table.insert(team1Children, UI.Panel {
+            flexDirection = "row", alignItems = "center", gap = 6,
+            children = {
+                -- 头像小圆点
+                UI.Panel { width = 14, height = 14, borderRadius = 7, backgroundColor = pdata.color },
+                UI.Label {
+                    id = "score" .. pi,
+                    text = tostring(0),
+                    fontSize = 16,
+                    fontColor = {255, 255, 255, 220},
+                },
+            }
         })
+    end
+
+    -- 构建右队（队伍2）成员列表
+    local team2Children = {}
+    for _, pi in ipairs(teams_[2].members) do
+        local pdata = PLAYERS[pi]
+        table.insert(team2Children, UI.Panel {
+            flexDirection = "row", alignItems = "center", justifyContent = "flex-end", gap = 6,
+            children = {
+                UI.Label {
+                    id = "score" .. pi,
+                    text = tostring(0),
+                    fontSize = 16,
+                    fontColor = {255, 255, 255, 220},
+                },
+                UI.Panel { width = 14, height = 14, borderRadius = 7, backgroundColor = pdata.color },
+            }
+        })
+    end
+
+    -- 构建队伍1面板的 children（避免 table.unpack 陷阱）
+    local t1PanelChildren = {
+        UI.Label {
+            id = "team1Score",
+            text = "团队总分 0",
+            fontSize = 18,
+            fontColor = teams_[1].color,
+            fontWeight = "bold",
+        },
+    }
+    for _, child in ipairs(team1Children) do
+        table.insert(t1PanelChildren, child)
+    end
+
+    -- 构建队伍2面板的 children
+    local t2PanelChildren = {
+        UI.Label {
+            id = "team2Score",
+            text = "0 团队总分",
+            fontSize = 18,
+            fontColor = teams_[2].color,
+            fontWeight = "bold",
+        },
+    }
+    for _, child in ipairs(team2Children) do
+        table.insert(t2PanelChildren, child)
     end
 
     UI.SetRoot(UI.Panel {
@@ -1083,16 +1283,26 @@ function CreateUI()
         width = "100%", height = "100%",
         pointerEvents = "box-none",
         children = {
-            -- 顶部分数栏
+            -- 左上角：队伍1
             UI.Panel {
-                id = "scoreBar",
+                id = "team1Panel",
                 position = "absolute",
-                top = 12, left = 0, right = 0,
-                flexDirection = "row",
-                justifyContent = "center",
-                gap = 40,
+                top = 8, left = 10,
+                padding = 8,
+                gap = 4,
                 pointerEvents = "none",
-                children = children,
+                children = t1PanelChildren,
+            },
+            -- 右上角：队伍2
+            UI.Panel {
+                id = "team2Panel",
+                position = "absolute",
+                top = 8, right = 10,
+                padding = 8,
+                gap = 4,
+                alignItems = "flex-end",
+                pointerEvents = "none",
+                children = t2PanelChildren,
             },
             -- 底部操作提示
             UI.Label {
@@ -1101,7 +1311,7 @@ function CreateUI()
                 textAlign = "center",
                 fontSize = 12,
                 fontColor = {255, 255, 255, 180},
-                text = "P1(红): Q左 W跳 E右 | P2(绿): A左 S跳 D右 | P3(蓝): Z左 X跳 C右",
+                text = "P1: QWE | P2: ASD | P3: ZXC | P4: UIO",
             },
         }
     })
@@ -1179,9 +1389,9 @@ function HandleUpdateContact(eventType, eventData)
     local platHalfH = platShape:GetSize().y / 2
     local platTopY = platPos.y + platHalfH
 
-    -- 获取玩家底部 Y 坐标
+    -- 获取玩家底部 Y 坐标（胶囊底部）
     local playerPos = playerNode.position2D
-    local playerBottomY = playerPos.y - CONFIG.PlayerRadius
+    local playerBottomY = playerPos.y - (capsuleHeight_ * playerScale_) / 2
 
     -- 如果玩家底部在平台顶部以下，禁用此接触（允许穿过）
     -- 给一小段容差（0.05米），防止站在平台上时闪烁
@@ -1222,6 +1432,7 @@ function HandleUpdate(eventType, eventData)
         return
     end
     if skinEditorOpen_ then
+        skinEditorAnimTime_ = skinEditorAnimTime_ + dt * 4.0  -- 预览动画循环
         return
     end
 
@@ -1264,10 +1475,26 @@ function UpdatePlayers(dt)
 
         p.body.linearVelocity = Vector2(desiredVelX, vel.y)
 
-        -- 跳跃
+        -- 跳跃（可变高度）
         if p.onGround and input:GetKeyPress(keys.jump) then
             p.body.linearVelocity = Vector2(desiredVelX, CONFIG.PlayerJumpSpeed)
             p.body.awake = true
+            p.jumping = true
+        elseif p.jumping and not p.onGround then
+            -- 松开跳跃键时截断上升速度（实现短按低跳、长按高跳）
+            if not input:GetKeyDown(keys.jump) then
+                local vy = p.body.linearVelocity.y
+                if vy > 0 then
+                    p.body.linearVelocity = Vector2(p.body.linearVelocity.x, vy * CONFIG.JumpCutMultiplier)
+                end
+                p.jumping = false
+            elseif p.body.linearVelocity.y <= 0 then
+                -- 已经开始下落，结束跳跃状态
+                p.jumping = false
+            end
+        elseif p.onGround then
+            -- 落地重置（不在起跳帧触发，因为起跳走第一个分支）
+            p.jumping = false
         end
 
         -- 更新动画状态
@@ -1321,6 +1548,13 @@ function UpdateGameState(dt)
             -- 收起动画播放完毕 → 进入游戏
             if bulletin_.animTimer >= bulletin_.exitDuration then
                 -- 公告板结束，开始本关游戏
+                -- 重置所有玩家到初始位置，恢复物理
+                for _, p in ipairs(players_) do
+                    p.body.bodyType = BT_DYNAMIC
+                    p.node:SetPosition2D(p.config.spawnX, CONFIG.GroundY + 2)
+                    p.body.linearVelocity = Vector2(0, 0)
+                    p.body.awake = true
+                end
                 SpawnPhotoZone()
                 gameState_ = "countdown"
                 countdown_ = CONFIG.CountdownTime
@@ -1419,24 +1653,57 @@ function TakePhoto()
             animTime = p.animTime,
         }
 
-        -- 检查玩家是否在拍照区域内
-        local inZone = pos.x >= photoZone_.x - photoZone_.width / 2
-                   and pos.x <= photoZone_.x + photoZone_.width / 2
-                   and pos.y >= photoZone_.y - photoZone_.height / 2
-                   and pos.y <= photoZone_.y + photoZone_.height / 2
+        -- 检查玩家视觉胶囊体是否与拍照区域矩形相交（包括完全在内部的情况）
+        -- 使用视觉半径(CONFIG.PlayerRadius)而非物理碰撞半径，确保"看到入镜=判定入镜"
+        local capR = CONFIG.PlayerRadius * playerScale_
+        local capH = capsuleHeight_ * playerScale_ * (CONFIG.PlayerRadius / capsuleRadius_)
+        local boxH = capH - capR * 2
+        if boxH < 0 then boxH = 0 end
+
+        -- 胶囊中轴线段: 从 (pos.x, pos.y - boxH/2) 到 (pos.x, pos.y + boxH/2)
+        local segBottom = pos.y - boxH / 2
+        local segTop = pos.y + boxH / 2
+
+        -- 拍照区域矩形边界
+        local rectLeft = photoZone_.x - photoZone_.width / 2
+        local rectRight = photoZone_.x + photoZone_.width / 2
+        local rectBottom = photoZone_.y - photoZone_.height / 2
+        local rectTop = photoZone_.y + photoZone_.height / 2
+
+        -- 计算胶囊中轴线段到矩形的最短距离
+        local dx = math.max(0, rectLeft - pos.x, pos.x - rectRight)
+        local dy = 0
+        if segTop < rectBottom then
+            dy = rectBottom - segTop
+        elseif segBottom > rectTop then
+            dy = segBottom - rectTop
+        end
+
+        local inZone = (dx * dx + dy * dy) <= capR * capR
 
         if inZone then
             p.score = p.score + CONFIG.ScorePerPhoto
+            -- 加到团队总分
+            local teamIdx = playerTeam_[i]
+            if teamIdx then
+                teams_[teamIdx].score = teams_[teamIdx].score + CONFIG.ScorePerPhoto
+            end
             table.insert(roundResult_, i)
-            print(p.config.name .. " 入镜得分! 总分: " .. p.score)
+            print(p.config.name .. " 入镜得分! 个人: " .. p.score .. " 团队: " .. (teamIdx and teams_[teamIdx].score or 0))
 
-            -- 检查胜利
-            if p.score >= CONFIG.WinScore then
+            -- 检查团队胜利
+            if teamIdx and teams_[teamIdx].score >= CONFIG.WinScore then
                 gameOver_ = true
-                winner_ = p.config.name
+                winner_ = teams_[teamIdx].name
                 print("=== " .. winner_ .. " 获胜! ===")
             end
         end
+    end
+
+    -- 冻结所有玩家（设为静态刚体，完全停止物理模拟）
+    for _, p in ipairs(players_) do
+        p.body.linearVelocity = Vector2(0, 0)
+        p.body.bodyType = BT_STATIC
     end
 
     -- 更新UI分数
@@ -1448,8 +1715,17 @@ function UpdateScoreUI()
     for i, p in ipairs(players_) do
         local label = UI.FindById("score" .. i)
         if label then
-            label:SetText(p.config.name .. ": " .. p.score)
+            label:SetText(tostring(p.score))
         end
+    end
+    -- 更新团队总分
+    local t1Label = UI.FindById("team1Score")
+    if t1Label then
+        t1Label:SetText("团队总分 " .. teams_[1].score)
+    end
+    local t2Label = UI.FindById("team2Score")
+    if t2Label then
+        t2Label:SetText(teams_[2].score .. " 团队总分")
     end
 end
 
@@ -1465,6 +1741,9 @@ function RestartGame()
         p.node:SetPosition2D(p.config.spawnX, CONFIG.GroundY + 2)
         p.body.linearVelocity = Vector2(0, 0)
     end
+
+    -- 重新随机分队
+    AssignTeams()
     UpdateScoreUI()
 
     -- 重置公告板，从第 1 关开始
@@ -1491,6 +1770,7 @@ function HandleNanoVGRender(eventType, eventData)
     DrawBulletin()
     DrawGameOver()
     DrawTerrainEditor()
+    DrawSkinEditorPreview()
 
     nvgEndFrame(nvg_)
 end
@@ -1726,7 +2006,7 @@ end
 --- @param params table {sx, sy, color, skin, skinIdx, facing, limbSwing, armSwing, inAir, isMoving, onGround, velY, name}
 function DrawSinglePlayer(params)
     local ppu = GetPixelsPerUnit()
-    local r = CONFIG.PlayerRadius * ppu
+    local r = CONFIG.PlayerRadius * playerScale_ * ppu
     local sx, sy = params.sx, params.sy
     local c = params.color
     local skin = params.skin
@@ -1751,7 +2031,8 @@ function DrawSinglePlayer(params)
     local shoeW = r * 0.45
     local shoeH = r * 0.26
     -- 编辑器偏移缩放因子（编辑器值基于 1080p 设计，ppu=100 时 r=40）
-    local editorScale = ppu / 100
+    -- 乘以 playerScale_ 使偏移量随角色整体缩放等比变化
+    local editorScale = ppu / 100 * playerScale_
 
     -- 身体中心偏移
     local torsoY = sy
@@ -1913,15 +2194,31 @@ function DrawSinglePlayer(params)
 
     -- ========== 碰撞体线框（调试） ==========
     if showCollisionDebug_ then
+        -- 使用视觉半径(CONFIG.PlayerRadius)绘制，与入镜检测一致
+        local capR = CONFIG.PlayerRadius * playerScale_ * ppu
+        local capH = capsuleHeight_ * playerScale_ * (CONFIG.PlayerRadius / capsuleRadius_) * ppu
+        local boxH = capH - capR * 2
+        if boxH < 1 then boxH = 1 end
+
         nvgStrokeWidth(nvg_, 2.0)
-        -- 主碰撞圆（绿色）
-        nvgBeginPath(nvg_)
-        nvgCircle(nvg_, sx, sy, r)
         nvgStrokeColor(nvg_, nvgRGBA(0, 255, 0, 200))
+
+        -- 胶囊轮廓（绿色）：上半圆 + 矩形两侧 + 下半圆
+        nvgBeginPath(nvg_)
+        -- 上半圆（CW=2：从左经上到右，向外凸出）
+        nvgArc(nvg_, sx, sy - boxH / 2, capR, math.pi, 0, 2)
+        -- 右侧直线
+        nvgLineTo(nvg_, sx + capR, sy + boxH / 2)
+        -- 下半圆（CW=2：从右经下到左，向外凸出）
+        nvgArc(nvg_, sx, sy + boxH / 2, capR, 0, math.pi, 2)
+        -- 左侧直线
+        nvgLineTo(nvg_, sx - capR, sy - boxH / 2)
+        nvgClosePath(nvg_)
         nvgStroke(nvg_)
+
         -- 脚部传感器圆（黄色）
-        local footR = CONFIG.PlayerRadius * 0.6 * ppu
-        local footOffY = CONFIG.PlayerRadius * 0.9 * ppu
+        local footR = capR * 0.6
+        local footOffY = (capH / 2) * 0.9
         nvgBeginPath(nvg_)
         nvgCircle(nvg_, sx, sy + footOffY, footR)
         nvgStrokeColor(nvg_, nvgRGBA(255, 255, 0, 200))
@@ -1962,6 +2259,67 @@ function DrawPlayers()
             name = p.config.name,
         })
     end
+end
+
+-- ============================================================================
+-- 皮肤编辑器预览：在面板左侧用 NanoVG 绘制角色（不被 UI 层遮挡）
+-- ============================================================================
+function DrawSkinEditorPreview()
+    if not skinEditorOpen_ then return end
+    local skin = skinsRuntime_[1]
+    if not skin then return end
+
+    -- 预览区域位置计算：
+    -- UI面板: position=absolute, top=50, right=10, padding=10
+    -- 面板内容宽: 左列240 + gap10 + 右列240 = 490, + padding*2 = 510
+    -- 面板实际渲染可能稍宽（slider内部元素），预估 540
+    -- 预览区放在面板左侧，留 20px 间距避免重叠
+    local previewW = 180
+    local previewH = 320
+    local panelLeftEdge = screenW_ - 560
+    local previewRight = panelLeftEdge - 20
+    local previewLeft = previewRight - previewW
+    local previewTop = 50  -- 与面板顶部对齐
+    local previewCenterX = previewLeft + previewW / 2
+    local previewCenterY = previewTop + previewH * 0.45  -- 角色略偏上
+
+    -- 绘制预览区背景（圆角深色面板）
+    nvgBeginPath(nvg_)
+    nvgRoundedRect(nvg_, previewLeft, previewTop, previewW, previewH, 8)
+    nvgFillColor(nvg_, nvgRGBA(15, 15, 25, 220))
+    nvgFill(nvg_)
+    -- 边框
+    nvgBeginPath(nvg_)
+    nvgRoundedRect(nvg_, previewLeft, previewTop, previewW, previewH, 8)
+    nvgStrokeColor(nvg_, nvgRGBA(60, 60, 80, 180))
+    nvgStrokeWidth(nvg_, 1)
+    nvgStroke(nvg_)
+
+    -- 标题
+    nvgFontSize(nvg_, 12)
+    nvgFontFace(nvg_, "sans")
+    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+    nvgFillColor(nvg_, nvgRGBA(120, 120, 140, 255))
+    nvgText(nvg_, previewCenterX, previewTop + 6, "预览", nil)
+
+    -- 模拟行走动画
+    local limbSwing = math.sin(skinEditorAnimTime_) * 0.5
+    local armSwing = -math.sin(skinEditorAnimTime_) * 0.4
+
+    DrawSinglePlayer({
+        sx = previewCenterX,
+        sy = previewCenterY,
+        color = PLAYERS[1].color,
+        skin = skin,
+        facing = 1,
+        limbSwing = limbSwing,
+        armSwing = armSwing,
+        inAir = false,
+        isMoving = true,
+        onGround = true,
+        velY = 0,
+        name = "",
+    })
 end
 
 function DrawCountdown()
@@ -2291,84 +2649,115 @@ function DrawBulletin()
     nvgFillColor(nvg_, nvgRGBA(230, 230, 240, math.floor(240 * displayProgress)))
     nvgText(nvg_, screenW_ / 2, boardY + titleBarH + 45, desc, nil)
 
-    -- 玩家头像区域
-    local avatarY = boardY + titleBarH + 100
-    local avatarSpacing = boardW / (#PLAYERS + 1)
-    local avatarR = 28
+    -- 玩家头像区域（按队伍分组）
+    local avatarY = boardY + titleBarH + 95
+    local avatarR = 22
+    local teamGap = 40  -- 两队之间间距
 
-    for i, pdata in ipairs(PLAYERS) do
-        local ax = boardX + avatarSpacing * i
-        local ay = avatarY
-        local c = pdata.color
+    for t = 1, 2 do
+        local team = teams_[t]
+        local tc = team.color
+        local members = team.members
+        local teamCount = #members
 
-        -- 头像圆圈背景
-        nvgBeginPath(nvg_)
-        nvgCircle(nvg_, ax, ay, avatarR)
-        local avatarGrad = nvgRadialGradient(nvg_, ax - 4, ay - 4, 2, avatarR,
-            nvgRGBA(math.min(255, c[1] + 60), math.min(255, c[2] + 60), math.min(255, c[3] + 60), 255),
-            nvgRGBA(c[1], c[2], c[3], 255))
-        nvgFillPaint(nvg_, avatarGrad)
-        nvgFill(nvg_)
+        -- 队伍区域水平位置：左队在左半，右队在右半
+        local teamCenterX
+        if t == 1 then
+            teamCenterX = boardX + boardW * 0.25
+        else
+            teamCenterX = boardX + boardW * 0.75
+        end
 
-        -- 头像边框
-        nvgBeginPath(nvg_)
-        nvgCircle(nvg_, ax, ay, avatarR)
-        nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, 150))
-        nvgStrokeWidth(nvg_, 2)
-        nvgStroke(nvg_)
+        -- 队伍名称
+        nvgFontSize(nvg_, 16)
+        nvgFontFace(nvg_, "sans")
+        nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+        nvgFillColor(nvg_, nvgRGBA(tc[1], tc[2], tc[3], math.floor(255 * displayProgress)))
+        nvgText(nvg_, teamCenterX, avatarY - avatarR - 10, team.name, nil)
 
-        -- 头像里的眼睛
-        nvgBeginPath(nvg_)
-        nvgCircle(nvg_, ax - 7, ay - 5, 4)
-        nvgCircle(nvg_, ax + 7, ay - 5, 4)
-        nvgFillColor(nvg_, nvgRGBA(255, 255, 255, 255))
-        nvgFill(nvg_)
-        nvgBeginPath(nvg_)
-        nvgCircle(nvg_, ax - 6, ay - 4, 2)
-        nvgCircle(nvg_, ax + 8, ay - 4, 2)
-        nvgFillColor(nvg_, nvgRGBA(0, 0, 0, 255))
-        nvgFill(nvg_)
+        -- 绘制该队成员头像
+        local memberSpacing = (avatarR * 2 + 12)
+        local startX = teamCenterX - (teamCount - 1) * memberSpacing / 2
 
-        -- 微笑
-        nvgBeginPath(nvg_)
-        nvgArc(nvg_, ax, ay + 6, 6, 0.2, math.pi - 0.2, NVG_CW)
-        nvgStrokeColor(nvg_, nvgRGBA(0, 0, 0, 200))
-        nvgStrokeWidth(nvg_, 2)
-        nvgStroke(nvg_)
+        for mIdx, pi in ipairs(members) do
+            local pdata = PLAYERS[pi]
+            local ax = startX + (mIdx - 1) * memberSpacing
+            local ay = avatarY
+            local c = pdata.color
 
-        -- 名字
-        nvgFontSize(nvg_, 14)
-        nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
-        nvgFillColor(nvg_, nvgRGBA(c[1], c[2], c[3], math.floor(255 * displayProgress)))
-        nvgText(nvg_, ax, ay + avatarR + 6, pdata.name, nil)
-
-        -- 对勾（如果已确认）
-        if bulletin_.confirmed[i] then
-            -- 绿色对勾圆圈
+            -- 头像圆圈背景
             nvgBeginPath(nvg_)
-            nvgCircle(nvg_, ax + avatarR * 0.65, ay - avatarR * 0.65, 12)
-            nvgFillColor(nvg_, nvgRGBA(40, 200, 80, 255))
+            nvgCircle(nvg_, ax, ay, avatarR)
+            local avatarGrad = nvgRadialGradient(nvg_, ax - 3, ay - 3, 2, avatarR,
+                nvgRGBA(math.min(255, c[1] + 60), math.min(255, c[2] + 60), math.min(255, c[3] + 60), 255),
+                nvgRGBA(c[1], c[2], c[3], 255))
+            nvgFillPaint(nvg_, avatarGrad)
+            nvgFill(nvg_)
+
+            -- 队伍色边框
+            nvgBeginPath(nvg_)
+            nvgCircle(nvg_, ax, ay, avatarR)
+            nvgStrokeColor(nvg_, nvgRGBA(tc[1], tc[2], tc[3], 200))
+            nvgStrokeWidth(nvg_, 2.5)
+            nvgStroke(nvg_)
+
+            -- 头像里的眼睛
+            nvgBeginPath(nvg_)
+            nvgCircle(nvg_, ax - 5, ay - 4, 3)
+            nvgCircle(nvg_, ax + 5, ay - 4, 3)
+            nvgFillColor(nvg_, nvgRGBA(255, 255, 255, 255))
             nvgFill(nvg_)
             nvgBeginPath(nvg_)
-            nvgCircle(nvg_, ax + avatarR * 0.65, ay - avatarR * 0.65, 12)
-            nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, 255))
-            nvgStrokeWidth(nvg_, 2)
+            nvgCircle(nvg_, ax - 4, ay - 3, 1.5)
+            nvgCircle(nvg_, ax + 6, ay - 3, 1.5)
+            nvgFillColor(nvg_, nvgRGBA(0, 0, 0, 255))
+            nvgFill(nvg_)
+
+            -- 微笑
+            nvgBeginPath(nvg_)
+            nvgArc(nvg_, ax, ay + 4, 5, 0.2, math.pi - 0.2, NVG_CW)
+            nvgStrokeColor(nvg_, nvgRGBA(0, 0, 0, 200))
+            nvgStrokeWidth(nvg_, 1.5)
             nvgStroke(nvg_)
 
-            -- 绘制对勾 ✓
-            local cx = ax + avatarR * 0.65
-            local cy = ay - avatarR * 0.65
-            nvgBeginPath(nvg_)
-            nvgMoveTo(nvg_, cx - 5, cy)
-            nvgLineTo(nvg_, cx - 1, cy + 4)
-            nvgLineTo(nvg_, cx + 6, cy - 4)
-            nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, 255))
-            nvgStrokeWidth(nvg_, 2.5)
-            nvgLineCap(nvg_, NVG_ROUND)
-            nvgLineJoin(nvg_, NVG_ROUND)
-            nvgStroke(nvg_)
+            -- 名字
+            nvgFontSize(nvg_, 12)
+            nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+            nvgFillColor(nvg_, nvgRGBA(c[1], c[2], c[3], math.floor(255 * displayProgress)))
+            nvgText(nvg_, ax, ay + avatarR + 4, pdata.name, nil)
+
+            -- 对勾（如果已确认）
+            if bulletin_.confirmed[pi] then
+                nvgBeginPath(nvg_)
+                nvgCircle(nvg_, ax + avatarR * 0.6, ay - avatarR * 0.6, 10)
+                nvgFillColor(nvg_, nvgRGBA(40, 200, 80, 255))
+                nvgFill(nvg_)
+                nvgBeginPath(nvg_)
+                nvgCircle(nvg_, ax + avatarR * 0.6, ay - avatarR * 0.6, 10)
+                nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, 255))
+                nvgStrokeWidth(nvg_, 1.5)
+                nvgStroke(nvg_)
+
+                local cx = ax + avatarR * 0.6
+                local cy = ay - avatarR * 0.6
+                nvgBeginPath(nvg_)
+                nvgMoveTo(nvg_, cx - 4, cy)
+                nvgLineTo(nvg_, cx - 1, cy + 3)
+                nvgLineTo(nvg_, cx + 5, cy - 3)
+                nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, 255))
+                nvgStrokeWidth(nvg_, 2)
+                nvgLineCap(nvg_, NVG_ROUND)
+                nvgLineJoin(nvg_, NVG_ROUND)
+                nvgStroke(nvg_)
+            end
         end
     end
+
+    -- VS 分隔符
+    nvgFontSize(nvg_, 22)
+    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg_, nvgRGBA(255, 200, 80, math.floor(220 * displayProgress)))
+    nvgText(nvg_, screenW_ / 2, avatarY, "VS", nil)
 
     -- 底部提示文字
     local hintY = boardY + boardH - 35

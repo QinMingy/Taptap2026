@@ -1,6 +1,9 @@
 {
+  "playerScale": 0.80,
+  "capsuleRadius": 0.30,
+  "capsuleHeight": 1.00,
   "headTransform": { "scale": 1.4, "offsetX": 0, "offsetY": 0, "rotation": 0 },
-  "torsoTransform": { "scale": 1.0, "offsetX": 0, "offsetY": 0, "rotation": 0 },
-  "armTransform": { "offsetX": 0, "offsetY": 0, "spacing": -10 },
-  "legTransform": { "offsetX": 0, "offsetY": -20, "spacing": -3 }
+  "torsoTransform": { "scale": 1.0, "offsetX": 0, "offsetY": 19, "rotation": 0 },
+  "armTransform": { "offsetX": 0, "offsetY": 5, "spacing": -20 },
+  "legTransform": { "offsetX": 0, "offsetY": -23, "spacing": -8 }
 }

@@ -8,6 +8,15 @@
       "handColor": "#F5D2AAFF",
       "legColor": "#32323CFF",
       "shoeColor": "#50505AFF"
+    },
+    {
+      "name": "mgz",
+      "headImage": "image/Charactor/mgz/head_mgz.png",
+      "torsoImage": "image/Charactor/mgz/body_mgz.png",
+      "armColor": "#FFFFFFFF",
+      "handColor": "#F5D2AAFF",
+      "legColor": "#3A4A5CFF",
+      "shoeColor": "#2A3A4CFF"
     }
   ]
 }
