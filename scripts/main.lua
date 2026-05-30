@@ -29,7 +29,7 @@ local function ParseHexColor(hex)
     return r, g, b, a
 end
 
---- 皮肤配置（与 docs/skins_data.lua 保持同步）
+--- 皮肤身份信息（与 docs/skins.json 保持同步）
 local function LoadSkinsConfig()
     return {
         {
@@ -40,15 +40,48 @@ local function LoadSkinsConfig()
             handColor = "#F5D2AAFF",
             legColor = "#32323CFF",
             shoeColor = "#50505AFF",
-            headTransform = { scale = 1.0, offsetX = 0, offsetY = 0, rotation = 0 },
-            torsoTransform = { scale = 1.0, offsetX = 0, offsetY = 0, rotation = 0 },
         },
+    }
+end
+
+--- 编辑器 Transform 数据（运行时从 assets/skin-editor.json 读取）
+local function LoadSkinEditorConfig()
+    local default = {
+        headTransform = { scale = 1.0, offsetX = 0, offsetY = 0, rotation = 0 },
+        torsoTransform = { scale = 1.0, offsetX = 0, offsetY = 0, rotation = 0 },
+        armTransform = { offsetX = 0, offsetY = 0, spacing = 0 },
+        legTransform = { offsetX = 0, offsetY = 0, spacing = 0 },
+    }
+    -- 优先从用户沙箱读取（编辑器保存的数据），fallback 到 assets 默认值
+    local jsonStr = nil
+    if fileSystem:FileExists("skin-editor.json") then
+        local file = File("skin-editor.json", FILE_READ)
+        if file:IsOpen() then
+            jsonStr = file:ReadString()
+            file:Close()
+        end
+    end
+    if not jsonStr or #jsonStr == 0 then
+        local file = cache:GetFile("skin-editor.json")
+        if not file then return default end
+        jsonStr = file:ReadString()
+        file:Close()
+    end
+    if not jsonStr or #jsonStr == 0 then return default end
+    local ok, data = pcall(cjson.decode, jsonStr)
+    if not ok or not data then return default end
+    return {
+        headTransform = data.headTransform or default.headTransform,
+        torsoTransform = data.torsoTransform or default.torsoTransform,
+        armTransform = data.armTransform or default.armTransform,
+        legTransform = data.legTransform or default.legTransform,
     }
 end
 
 -- 皮肤数据（运行时）
 local skinsData_ = {}     -- 从 JSON 解析的原始数据
 local skinsRuntime_ = {}  -- 运行时数据（含 NanoVG 图片句柄）
+local showCollisionDebug_ = false  -- 是否显示碰撞体线框
 
 -- ============================================================================
 -- 游戏配置
@@ -69,8 +102,8 @@ local CONFIG = {
     PlayerJumpSpeed = 11.0,
 
     -- 拍照区域
-    PhotoWidth = 4.0,       -- 拍照区域宽度
-    PhotoHeight = 3.0,      -- 拍照区域高度
+    PhotoWidth = 4.0,       -- 拍照区域宽度(400px / 1920 * 19.2)
+    PhotoHeight = 2.25,     -- 拍照区域高度(225px / 1080 * 10.8)
     CountdownTime = 5.0,    -- 倒计时秒数
     IntervalTime = 3.0,     -- 两次拍照间隔
 
@@ -126,6 +159,17 @@ local photoZone_ = {
     height = CONFIG.PhotoHeight,
 }
 
+-- 6个预设拍照位置(中心坐标)，权重相同
+local PHOTO_PRESETS = {
+    { x = -4.8, y = 0.4,  name = "常规" },
+    { x = 0.0,  y = 2.5,  name = "高度" },
+    { x = 5.8,  y = 2.0,  name = "多路径" },
+    { x = 3.0,  y = -2.7, name = "底部略高" },
+    { x = 5.8,  y = -3.8, name = "角落" },
+    { x = 2.5,  y = 1.0,  name = "常规2" },
+}
+local usedPresets_ = {}  -- 已出现过的预设索引集合
+
 -- 游戏状态
 local gameState_ = "bulletin"  -- bulletin, countdown, flash, showPhoto
 local countdown_ = 0
@@ -174,6 +218,19 @@ local cameraZoomed_ = false
 local skinEditorOpen_ = false
 local skinEditorPanel_ = nil
 
+-- 编辑器菜单状态
+local editorMenuOpen_ = false
+local editorMenuPanel_ = nil
+
+-- 地形编辑器状态
+local terrainEditorOpen_ = false
+local terrainEditorPanel_ = nil
+local terrainSelected_ = nil      -- 选中的平台索引
+local terrainDragMode_ = "none"   -- "none", "move", "left", "right", "top", "bottom"
+local terrainDragStart_ = {sx = 0, sy = 0}  -- 拖拽起始屏幕坐标
+local terrainDragOrigin_ = {x = 0, y = 0, width = 0, height = 0}  -- 拖拽起始时的平台数据
+local terrainMouseDown_ = false
+
 -- ============================================================================
 -- 入口
 -- ============================================================================
@@ -195,6 +252,8 @@ function Start()
     CreatePlayers()
     CreateUI()
     CreateSkinEditor()
+    CreateTerrainEditor()
+    CreateEditorMenu()
 
     -- 初始化公告板
     bulletin_.confirmed = {}
@@ -206,6 +265,7 @@ function Start()
     SubscribeToEvent(nvg_, "NanoVGRender", "HandleNanoVGRender")
     SubscribeToEvent("PhysicsBeginContact2D", "HandleBeginContact")
     SubscribeToEvent("PhysicsEndContact2D", "HandleEndContact")
+    SubscribeToEvent("PhysicsUpdateContact2D", "HandleUpdateContact")
 
 
     print("=== Photo Rush 三人抓拍游戏启动 ===")
@@ -226,7 +286,16 @@ end
 --- 加载皮肤并创建 NanoVG 图片句柄
 function LoadSkins()
     skinsData_ = LoadSkinsConfig()
+    local editorCfg = LoadSkinEditorConfig()
     skinsRuntime_ = {}
+
+    -- 合并 editor transform 到 skinsData
+    for _, skin in ipairs(skinsData_) do
+        skin.headTransform = editorCfg.headTransform
+        skin.torsoTransform = editorCfg.torsoTransform
+        skin.armTransform = editorCfg.armTransform
+        skin.legTransform = editorCfg.legTransform
+    end
 
     for i, skin in ipairs(skinsData_) do
         local runtime = {
@@ -239,6 +308,8 @@ function LoadSkins()
             shoeColor = { ParseHexColor(skin.shoeColor) },
             headTransform = ParseTransform(skin.headTransform),
             torsoTransform = ParseTransform(skin.torsoTransform),
+            armTransform = skin.armTransform,
+            legTransform = skin.legTransform,
         }
         table.insert(skinsRuntime_, runtime)
         print(string.format("[Skin] Loaded: %s (head=%d, torso=%d)", skin.name, runtime.headImg, runtime.torsoImg))
@@ -319,32 +390,70 @@ function CreateSkinEditor()
             MakeSlider("T.Rot", -180, 180, skin.torsoTransform.rotation, 1, function(self, v)
                 skin.torsoTransform.rotation = v; updateVal("T.Rot", v)
             end),
-            -- 导出按钮（弹出文本框供复制）
+            -- 手臂偏移
+            MakeSlider("A.OffX", -30, 30, skin.armTransform.offsetX, 1, function(self, v)
+                skin.armTransform.offsetX = v; updateVal("A.OffX", v)
+            end),
+            MakeSlider("A.OffY", -30, 30, skin.armTransform.offsetY, 1, function(self, v)
+                skin.armTransform.offsetY = v; updateVal("A.OffY", v)
+            end),
+            MakeSlider("A.Gap", -20, 20, skin.armTransform.spacing, 1, function(self, v)
+                skin.armTransform.spacing = v; updateVal("A.Gap", v)
+            end),
+            -- 腿部偏移
+            MakeSlider("L.OffX", -30, 30, skin.legTransform.offsetX, 1, function(self, v)
+                skin.legTransform.offsetX = v; updateVal("L.OffX", v)
+            end),
+            MakeSlider("L.OffY", -30, 30, skin.legTransform.offsetY, 1, function(self, v)
+                skin.legTransform.offsetY = v; updateVal("L.OffY", v)
+            end),
+            MakeSlider("L.Gap", -20, 20, skin.legTransform.spacing, 1, function(self, v)
+                skin.legTransform.spacing = v; updateVal("L.Gap", v)
+            end),
+            -- 碰撞体线框显示
+            UI.Panel {
+                flexDirection = "row", alignItems = "center", gap = 8, height = 30,
+                children = {
+                    UI.Label { text = "显示碰撞体", fontSize = 12, fontColor = {200, 200, 200, 255} },
+                    UI.Toggle {
+                        value = showCollisionDebug_,
+                        onChange = function(self, v)
+                            showCollisionDebug_ = v
+                        end,
+                    },
+                }
+            },
+            -- 复制配置到剪贴板（JSON 格式，匹配 docs/skin-editor.json）
             UI.Button {
-                text = "导出配置", variant = "primary", height = 30,
+                text = "复制配置", variant = "primary", height = 30,
                 onClick = function()
                     local ht = skin.headTransform
                     local tt = skin.torsoTransform
+                    local at = skin.armTransform
+                    local lt = skin.legTransform
                     local content = string.format(
-                        '-- 皮肤配置数据（由编辑器导出）\n'
-                        .. 'return {\n'
-                        .. '    skins = {\n'
-                        .. '        {\n'
-                        .. '            name = "Nekoark",\n'
-                        .. '            headImage = "image/Charactor/Nekoark/head_neko.png",\n'
-                        .. '            torsoImage = "image/Charactor/Nekoark/body_neko.png",\n'
-                        .. '            armColor = "#FFFFFFFF",\n'
-                        .. '            handColor = "#F5D2AAFF",\n'
-                        .. '            legColor = "#32323CFF",\n'
-                        .. '            shoeColor = "#50505AFF",\n'
-                        .. '            headTransform = { scale = %.1f, offsetX = %g, offsetY = %g, rotation = %g },\n'
-                        .. '            torsoTransform = { scale = %.1f, offsetX = %g, offsetY = %g, rotation = %g },\n'
-                        .. '        },\n'
-                        .. '    }\n'
+                        '{\n'
+                        .. '  "headTransform": { "scale": %.1f, "offsetX": %g, "offsetY": %g, "rotation": %g },\n'
+                        .. '  "torsoTransform": { "scale": %.1f, "offsetX": %g, "offsetY": %g, "rotation": %g },\n'
+                        .. '  "armTransform": { "offsetX": %g, "offsetY": %g, "spacing": %g },\n'
+                        .. '  "legTransform": { "offsetX": %g, "offsetY": %g, "spacing": %g }\n'
                         .. '}\n',
                         ht.scale, ht.offsetX, ht.offsetY, ht.rotation,
-                        tt.scale, tt.offsetX, tt.offsetY, tt.rotation
+                        tt.scale, tt.offsetX, tt.offsetY, tt.rotation,
+                        at.offsetX, at.offsetY, at.spacing,
+                        lt.offsetX, lt.offsetY, lt.spacing
                     )
+                    -- 保存到用户沙箱文件（下次运行自动加载）
+                    local saveFile = File("skin-editor.json", FILE_WRITE)
+                    if saveFile:IsOpen() then
+                        saveFile:WriteString(content)
+                        saveFile:Close()
+                        print("[SkinEditor] Config saved to skin-editor.json")
+                    end
+                    -- 写入系统剪贴板
+                    ui.useSystemClipboard = true
+                    ui:SetClipboardText(content)
+                    -- 弹窗作为视觉反馈 + WASM 环境后备
                     ShowExportPopup(content)
                 end
             },
@@ -383,7 +492,7 @@ function ShowExportPopup(content)
                 padding = 16,
                 gap = 10,
                 children = {
-                    UI.Label { text = "配置内容（全选复制）", fontSize = 14, fontColor = {255, 220, 100, 255} },
+                    UI.Label { text = "已复制到剪贴板（如未生效请手动复制）", fontSize = 14, fontColor = {255, 220, 100, 255} },
                     UI.ScrollView {
                         width = "100%",
                         height = 260,
@@ -421,7 +530,375 @@ function ToggleSkinEditor()
     if skinEditorPanel_ == nil then return end
     skinEditorOpen_ = not skinEditorOpen_
     skinEditorPanel_:SetVisible(skinEditorOpen_)
-    print("[SkinEditor] " .. (skinEditorOpen_ and "打开" or "关闭"))
+end
+
+-- ============================================================================
+-- 地形编辑器
+-- ============================================================================
+
+--- 屏幕坐标转物理坐标（PhysToScreen 的逆运算）
+function ScreenToPhys(sx, sy)
+    local camera = cameraNode_:GetComponent("Camera")
+    local orthoSize = camera.orthoSize
+    local camX = cameraNode_.position.x
+    local camY = cameraNode_.position.y
+    local ppu = screenH_ / orthoSize
+
+    local px = camX + (sx - screenW_ / 2) / ppu
+    local py = camY - (sy - screenH_ / 2) / ppu
+    return px, py
+end
+
+function ToggleTerrainEditor()
+    terrainEditorOpen_ = not terrainEditorOpen_
+    if terrainEditorPanel_ then
+        terrainEditorPanel_:SetVisible(terrainEditorOpen_)
+    end
+    if not terrainEditorOpen_ then
+        terrainSelected_ = nil
+        terrainDragMode_ = "none"
+        terrainMouseDown_ = false
+    end
+end
+
+--- 编辑器菜单总控：Tab 键统一入口
+function ToggleEditorMenu()
+    -- 如果有编辑器正在打开 → 关闭它，回到游戏
+    if terrainEditorOpen_ then
+        ToggleTerrainEditor()
+        return
+    end
+    if skinEditorOpen_ then
+        ToggleSkinEditor()
+        return
+    end
+
+    -- 否则切换编辑器选择菜单
+    editorMenuOpen_ = not editorMenuOpen_
+    if editorMenuPanel_ then
+        editorMenuPanel_:SetVisible(editorMenuOpen_)
+    end
+end
+
+function CreateEditorMenu()
+    editorMenuPanel_ = UI.Panel {
+        id = "editorMenu",
+        position = "absolute",
+        top = 0, left = 0, right = 0, bottom = 0,
+        backgroundColor = {0, 0, 0, 160},
+        justifyContent = "center",
+        alignItems = "center",
+        children = {
+            UI.Panel {
+                width = 260,
+                backgroundColor = {30, 35, 50, 240},
+                borderRadius = 12,
+                padding = 20,
+                gap = 12,
+                alignItems = "center",
+                children = {
+                    UI.Label { text = "编辑器", fontSize = 18, fontColor = {255, 255, 255, 255} },
+                    UI.Label { text = "选择要打开的编辑器 (Tab 关闭)", fontSize = 11, fontColor = {160, 160, 160, 255} },
+                    UI.Button {
+                        text = "🗺️ 地形编辑器", variant = "primary", width = "100%", height = 38,
+                        onClick = function()
+                            editorMenuOpen_ = false
+                            editorMenuPanel_:SetVisible(false)
+                            ToggleTerrainEditor()
+                        end
+                    },
+                    UI.Button {
+                        text = "🎨 皮肤编辑器", variant = "outline", width = "100%", height = 38,
+                        onClick = function()
+                            editorMenuOpen_ = false
+                            editorMenuPanel_:SetVisible(false)
+                            ToggleSkinEditor()
+                        end
+                    },
+                }
+            }
+        }
+    }
+    editorMenuPanel_:SetVisible(false)
+
+    local root = UI.FindById("root")
+    if root then
+        root:AddChild(editorMenuPanel_)
+    end
+end
+
+function CreateTerrainEditor()
+    terrainEditorPanel_ = UI.Panel {
+        id = "terrainEditor",
+        position = "absolute",
+        top = 50, left = 10,
+        width = 200,
+        backgroundColor = {20, 20, 30, 220},
+        borderRadius = 8,
+        padding = 10,
+        gap = 6,
+        children = {
+            UI.Label { text = "地形编辑器 (Tab 关闭)", fontSize = 13, fontColor = {100, 255, 180, 255} },
+            UI.Label { id = "te_hint", text = "点击选中平台\n拖拽移动 / 边缘拉伸", fontSize = 11, fontColor = {180, 180, 180, 255} },
+            UI.Label { id = "te_info", text = "", fontSize = 11, fontColor = {200, 200, 200, 255} },
+            UI.Button {
+                text = "复制配置", variant = "primary", height = 28,
+                onClick = function()
+                    local content = ExportTerrainConfig()
+                    ui.useSystemClipboard = true
+                    ui:SetClipboardText(content)
+                    ShowExportPopup(content)
+                end
+            },
+        }
+    }
+    terrainEditorPanel_:SetVisible(false)
+
+    local root = UI.FindById("root")
+    if root then
+        root:AddChild(terrainEditorPanel_)
+    end
+end
+
+--- 导出地形配置为 JSON
+function ExportTerrainConfig()
+    local lines = {}
+    table.insert(lines, '{')
+    table.insert(lines, '  "ground": {')
+    local g = platforms_[1]
+    table.insert(lines, string.format('    "x": %.2f, "y": %.2f, "width": %.2f, "height": %.2f', g.x, g.y, g.width, g.height))
+    table.insert(lines, '  },')
+    table.insert(lines, '  "platforms": [')
+    for i = 2, #platforms_ do
+        local p = platforms_[i]
+        local comma = (i < #platforms_) and "," or ""
+        table.insert(lines, string.format('    { "x": %.2f, "y": %.2f, "width": %.2f, "height": %.2f }%s', p.x, p.y, p.width, p.height, comma))
+    end
+    table.insert(lines, '  ]')
+    table.insert(lines, '}')
+    return table.concat(lines, "\n")
+end
+
+--- 更新选中平台信息显示
+function UpdateTerrainInfoLabel()
+    local lbl = UI.FindById("te_info")
+    if not lbl then return end
+    if terrainSelected_ then
+        local p = platforms_[terrainSelected_]
+        local name = terrainSelected_ == 1 and "地面" or ("平台 #" .. (terrainSelected_ - 1))
+        lbl:SetText(string.format("%s\nx=%.1f y=%.1f\nw=%.1f h=%.2f", name, p.x, p.y, p.width, p.height))
+    else
+        lbl:SetText("")
+    end
+end
+
+--- 判断鼠标在平台的哪个区域（返回拖拽模式）
+--- handleSize: 边缘手柄像素宽度
+function HitTestPlatform(platIdx, mx, my)
+    local p = platforms_[platIdx]
+    local ppu = GetPixelsPerUnit()
+    local sx, sy = PhysToScreen(p.x, p.y)
+    local halfW = p.width * ppu / 2
+    local halfH = p.height * ppu / 2
+
+    local handleSize = 10  -- 像素
+
+    -- 检查是否在平台矩形内（扩展手柄区域）
+    if mx < sx - halfW - handleSize or mx > sx + halfW + handleSize then return nil end
+    if my < sy - halfH - handleSize or my > sy + halfH + handleSize then return nil end
+
+    -- 上下左右边缘检测
+    if mx >= sx - halfW - handleSize and mx <= sx - halfW + handleSize then return "left" end
+    if mx >= sx + halfW - handleSize and mx <= sx + halfW + handleSize then return "right" end
+    if my >= sy - halfH - handleSize and my <= sy - halfH + handleSize then return "top" end
+    if my >= sy + halfH - handleSize and my <= sy + halfH + handleSize then return "bottom" end
+
+    -- 中心区域 → 移动
+    if mx >= sx - halfW and mx <= sx + halfW and my >= sy - halfH and my <= sy + halfH then
+        return "move"
+    end
+
+    return nil
+end
+
+--- 同步编辑结果到物理世界节点
+function SyncPlatformToNode(platIdx)
+    local p = platforms_[platIdx]
+    if not p.node then return end
+    p.node:SetPosition2D(p.x, p.y)
+    local shape = p.node:GetComponent("CollisionBox2D")
+    if shape then
+        shape:SetSize(p.width, p.height)
+    end
+end
+
+--- 地形编辑器主更新（鼠标交互）
+function UpdateTerrainEditor(dt)
+    local mx = input.mousePosition.x
+    local my = input.mousePosition.y
+    local mousePressed = input:GetMouseButtonPress(MOUSEB_LEFT)
+    local mouseDown = input:GetMouseButtonDown(MOUSEB_LEFT)
+
+    -- 鼠标按下：选中或开始拖拽
+    if mousePressed then
+        terrainMouseDown_ = true
+        local hit = false
+
+        -- 如果已有选中，优先检测当前选中平台的手柄
+        if terrainSelected_ then
+            local mode = HitTestPlatform(terrainSelected_, mx, my)
+            if mode then
+                terrainDragMode_ = mode
+                terrainDragStart_.sx = mx
+                terrainDragStart_.sy = my
+                local p = platforms_[terrainSelected_]
+                terrainDragOrigin_ = {x = p.x, y = p.y, width = p.width, height = p.height}
+                hit = true
+            end
+        end
+
+        -- 未命中当前选中 → 尝试选中其他平台
+        if not hit then
+            terrainSelected_ = nil
+            terrainDragMode_ = "none"
+            -- 从上到下遍历（后加的平台在前面更容易点到）
+            for i = #platforms_, 1, -1 do
+                local mode = HitTestPlatform(i, mx, my)
+                if mode then
+                    terrainSelected_ = i
+                    terrainDragMode_ = mode
+                    terrainDragStart_.sx = mx
+                    terrainDragStart_.sy = my
+                    local p = platforms_[i]
+                    terrainDragOrigin_ = {x = p.x, y = p.y, width = p.width, height = p.height}
+                    break
+                end
+            end
+            UpdateTerrainInfoLabel()
+        end
+    end
+
+    -- 拖拽中
+    if mouseDown and terrainMouseDown_ and terrainSelected_ and terrainDragMode_ ~= "none" then
+        local dx = mx - terrainDragStart_.sx
+        local dy = my - terrainDragStart_.sy
+        local ppu = GetPixelsPerUnit()
+        local worldDx = dx / ppu
+        local worldDy = -dy / ppu  -- 屏幕Y向下，物理Y向上
+
+        local p = platforms_[terrainSelected_]
+        local orig = terrainDragOrigin_
+
+        if terrainDragMode_ == "move" then
+            p.x = orig.x + worldDx
+            p.y = orig.y + worldDy
+        elseif terrainDragMode_ == "left" then
+            -- 左边缘向左拉 → 宽度增加，中心左移
+            local newWidth = math.max(0.5, orig.width - worldDx)
+            local widthDiff = newWidth - orig.width
+            p.width = newWidth
+            p.x = orig.x - widthDiff / 2
+        elseif terrainDragMode_ == "right" then
+            local newWidth = math.max(0.5, orig.width + worldDx)
+            local widthDiff = newWidth - orig.width
+            p.width = newWidth
+            p.x = orig.x + widthDiff / 2
+        elseif terrainDragMode_ == "top" then
+            -- 上边缘向上拉 → 高度增加，中心上移
+            local newHeight = math.max(0.2, orig.height + worldDy)
+            local heightDiff = newHeight - orig.height
+            p.height = newHeight
+            p.y = orig.y + heightDiff / 2
+        elseif terrainDragMode_ == "bottom" then
+            local newHeight = math.max(0.2, orig.height - worldDy)
+            local heightDiff = newHeight - orig.height
+            p.height = newHeight
+            p.y = orig.y - heightDiff / 2
+        end
+
+        SyncPlatformToNode(terrainSelected_)
+        UpdateTerrainInfoLabel()
+    end
+
+    -- 鼠标释放
+    if not mouseDown then
+        terrainMouseDown_ = false
+        terrainDragMode_ = "none"
+    end
+end
+
+--- 绘制地形编辑器覆盖层
+function DrawTerrainEditor()
+    if not terrainEditorOpen_ then return end
+
+    local ppu = GetPixelsPerUnit()
+    local handleSize = 8
+
+    -- 遍历所有平台，绘制半透明轮廓
+    for i, plat in ipairs(platforms_) do
+        local sx, sy = PhysToScreen(plat.x, plat.y)
+        local pw = plat.width * ppu
+        local ph = plat.height * ppu
+
+        if i == terrainSelected_ then
+            -- 选中高亮：亮绿边框
+            nvgBeginPath(nvg_)
+            nvgRect(nvg_, sx - pw/2, sy - ph/2, pw, ph)
+            nvgFillColor(nvg_, nvgRGBA(100, 255, 180, 40))
+            nvgFill(nvg_)
+            nvgBeginPath(nvg_)
+            nvgRect(nvg_, sx - pw/2, sy - ph/2, pw, ph)
+            nvgStrokeColor(nvg_, nvgRGBA(100, 255, 180, 255))
+            nvgStrokeWidth(nvg_, 2)
+            nvgStroke(nvg_)
+
+            -- 四边手柄
+            local handles = {
+                {x = sx - pw/2, y = sy, mode = "left"},
+                {x = sx + pw/2, y = sy, mode = "right"},
+                {x = sx, y = sy - ph/2, mode = "top"},
+                {x = sx, y = sy + ph/2, mode = "bottom"},
+            }
+            for _, h in ipairs(handles) do
+                nvgBeginPath(nvg_)
+                nvgRect(nvg_, h.x - handleSize/2, h.y - handleSize/2, handleSize, handleSize)
+                local isActive = (terrainDragMode_ == h.mode)
+                if isActive then
+                    nvgFillColor(nvg_, nvgRGBA(255, 220, 80, 255))
+                else
+                    nvgFillColor(nvg_, nvgRGBA(255, 255, 255, 220))
+                end
+                nvgFill(nvg_)
+                nvgBeginPath(nvg_)
+                nvgRect(nvg_, h.x - handleSize/2, h.y - handleSize/2, handleSize, handleSize)
+                nvgStrokeColor(nvg_, nvgRGBA(0, 0, 0, 180))
+                nvgStrokeWidth(nvg_, 1)
+                nvgStroke(nvg_)
+            end
+
+            -- 尺寸标注
+            nvgFontSize(nvg_, 11)
+            nvgFontFace(nvg_, "sans")
+            nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+            nvgFillColor(nvg_, nvgRGBA(100, 255, 180, 220))
+            local label = string.format("%.1f × %.2f", plat.width, plat.height)
+            nvgText(nvg_, sx, sy - ph/2 - 4, label, nil)
+        else
+            -- 非选中：白色虚线轮廓
+            nvgBeginPath(nvg_)
+            nvgRect(nvg_, sx - pw/2, sy - ph/2, pw, ph)
+            nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, 80))
+            nvgStrokeWidth(nvg_, 1)
+            nvgStroke(nvg_)
+        end
+    end
+
+    -- 顶部提示
+    nvgFontSize(nvg_, 14)
+    nvgFontFace(nvg_, "sans")
+    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+    nvgFillColor(nvg_, nvgRGBA(100, 255, 180, 200))
+    nvgText(nvg_, screenW_ / 2, 6, "[ 地形编辑模式 - 游戏已暂停 | Tab 退出 ]", nil)
 end
 
 function Stop()
@@ -443,29 +920,35 @@ function CreateScene()
     cameraNode_ = scene_:CreateChild("Camera")
     local camera = cameraNode_:CreateComponent("Camera")
     camera.orthographic = true
-    -- Contain策略: 确保19.2x10.8设计区域始终完整可见并居中
-    camera.orthoSize = CalcContainOrthoSize()
-    cameraNode_.position = Vector3(0, 0, -10)
+    -- Contain策略: 确保19.2x10.8设计区域始终完整可见
+    local ortho, camY = CalcContainOrthoSize()
+    camera.orthoSize = ortho
+    cameraNode_.position = Vector3(0, camY, -10)
 
     renderer:SetViewport(0, Viewport:new(scene_, camera))
 end
 
---- 计算Contain策略下的orthoSize
---- 设计区域19.2x10.8(16:9)始终完整可见，居中显示，多余部分留空
+--- 计算Contain策略下的orthoSize和相机Y位置
+--- 设计区域19.2x10.8(16:9)始终完整可见
+--- 屏幕更宽: 居中显示，两侧留空
+--- 屏幕更高: 底部对齐屏幕底部，空余在上方
 function CalcContainOrthoSize()
     local sw = graphics:GetWidth()
     local sh = graphics:GetHeight()
-    if sw <= 0 or sh <= 0 then return CONFIG.OrthoSize end
+    if sw <= 0 or sh <= 0 then return CONFIG.OrthoSize, 0 end
 
     local screenAspect = sw / sh
     local designAspect = CONFIG.MapWidth / CONFIG.MapHeight  -- 16/9 ≈ 1.778
 
     if screenAspect >= designAspect then
-        -- 屏幕更宽(或刚好16:9): 高度适配，两侧留空
-        return CONFIG.MapHeight  -- 10.8
+        -- 屏幕更宽(或刚好16:9): 高度适配，两侧留空，垂直居中
+        return CONFIG.MapHeight, 0  -- orthoSize=10.8, camY=0
     else
-        -- 屏幕更高: 宽度适配，上下留空
-        return CONFIG.MapWidth / screenAspect
+        -- 屏幕更高: 宽度适配，底部对齐屏幕底部
+        local ortho = CONFIG.MapWidth / screenAspect
+        -- 游戏区域底部=-5.4, 要贴屏幕底: camY - ortho/2 = -5.4
+        local camY = ortho / 2 - CONFIG.MapHeight / 2
+        return ortho, camY
     end
 end
 
@@ -473,43 +956,36 @@ end
 -- 创建世界(地面+平台)
 -- ============================================================================
 function CreateWorld()
-    -- 地面（高度0.8，底部贴屏幕底-5.4）
-    local groundHeight = 0.8
+    -- 地面
+    local groundHeight = 0.63
     local groundNode = scene_:CreateChild("Ground")
-    groundNode:SetPosition2D(0, CONFIG.GroundY)
+    groundNode:SetPosition2D(0, -5.09)
     local groundBody = groundNode:CreateComponent("RigidBody2D")
     groundBody.bodyType = BT_STATIC
     local groundShape = groundNode:CreateComponent("CollisionBox2D")
-    groundShape:SetSize(CONFIG.MapWidth + 2, groundHeight)
+    groundShape:SetSize(21.20, groundHeight)
     groundShape.friction = 0.3
     groundShape.restitution = 0.0
     groundShape.categoryBits = 1
-    table.insert(platforms_, {x=0, y=CONFIG.GroundY, width=CONFIG.MapWidth+2, height=groundHeight})
+    table.insert(platforms_, {x=0, y=-5.09, width=21.20, height=groundHeight, node=groundNode})
 
     -- 平台（根据设计图 1920x1080 布局，视野 19.2x10.8）
     -- 地面顶部 Y=-4.6，屏幕顶部 Y=+5.4
     local platformData = {
-        -- 左下
-        {x = -7.0, y = -3.2, width = 2.6, height = 0.35},
-        -- 左中
-        {x = -4.5, y = -0.8, width = 2.4, height = 0.35},
-        -- 中下
-        {x = -1.2, y = -2.0, width = 2.4, height = 0.35},
-        -- 中间（偏上）
-        {x =  1.2, y =  0.8, width = 2.8, height = 0.35},
-        -- 中右下
-        {x =  3.5, y = -3.0, width = 2.8, height = 0.35},
-        -- 右中
-        {x =  5.2, y = -0.5, width = 2.4, height = 0.35},
-        -- 右下
-        {x =  7.8, y = -1.8, width = 3.0, height = 0.35},
-        -- 上方（偏右）
-        {x =  4.5, y =  3.2, width = 1.8, height = 0.35},
+        {x = -5.93, y = -3.22, width = 2.60, height = 0.32},
+        {x = -3.93, y = -0.80, width = 2.40, height = 0.35},
+        {x = -0.96, y = -1.97, width = 2.40, height = 0.35},
+        {x =  0.79, y =  0.75, width = 2.80, height = 0.35},
+        {x =  3.45, y = -2.87, width = 2.80, height = 0.32},
+        {x =  4.40, y = -0.10, width = 1.92, height = 0.42},
+        {x =  6.61, y = -1.71, width = 3.00, height = 0.35},
+        {x =  4.01, y =  2.97, width = 1.51, height = 0.35},
     }
 
     for _, data in ipairs(platformData) do
         local node = scene_:CreateChild("Platform")
         node:SetPosition2D(data.x, data.y)
+        node:AddTag("one_way_platform")
         local body = node:CreateComponent("RigidBody2D")
         body.bodyType = BT_STATIC
         local shape = node:CreateComponent("CollisionBox2D")
@@ -517,6 +993,7 @@ function CreateWorld()
         shape.friction = 0.3
         shape.restitution = 0.0
         shape.categoryBits = 1
+        data.node = node
         table.insert(platforms_, data)
     end
 
@@ -677,6 +1154,42 @@ function HandleEndContact(eventType, eventData)
     end
 end
 
+--- 单向平台: 允许玩家从下方跳跃穿过平台
+function HandleUpdateContact(eventType, eventData)
+    local nodeA = eventData["NodeA"]:GetPtr("Node")
+    local nodeB = eventData["NodeB"]:GetPtr("Node")
+
+    -- 判断哪个是单向平台
+    local platformNode, playerNode
+    if nodeA:HasTag("one_way_platform") then
+        platformNode, playerNode = nodeA, nodeB
+    elseif nodeB:HasTag("one_way_platform") then
+        platformNode, playerNode = nodeB, nodeA
+    else
+        return
+    end
+
+    -- 确认另一个是玩家
+    local pi = GetPlayerIndex(playerNode)
+    if not pi then return end
+
+    -- 获取平台顶部 Y 坐标
+    local platPos = platformNode.position2D
+    local platShape = platformNode:GetComponent("CollisionBox2D")
+    local platHalfH = platShape:GetSize().y / 2
+    local platTopY = platPos.y + platHalfH
+
+    -- 获取玩家底部 Y 坐标
+    local playerPos = playerNode.position2D
+    local playerBottomY = playerPos.y - CONFIG.PlayerRadius
+
+    -- 如果玩家底部在平台顶部以下，禁用此接触（允许穿过）
+    -- 给一小段容差（0.05米），防止站在平台上时闪烁
+    if playerBottomY < platTopY - 0.05 then
+        eventData["Enabled"] = Variant(false)
+    end
+end
+
 -- ============================================================================
 -- 游戏逻辑更新
 -- ============================================================================
@@ -687,14 +1200,29 @@ function HandleUpdate(eventType, eventData)
     screenW_ = graphics:GetWidth()
     screenH_ = graphics:GetHeight()
 
-    -- 使用Contain策略保持设计区域完整可见并居中
-    local camera = cameraNode_:GetComponent("Camera")
-    camera.orthoSize = CalcContainOrthoSize()
-    cameraNode_.position = Vector3(0, 0, -10)
+    -- 正常模式下：使用Contain策略保持设计区域完整可见
+    if not cameraZoomed_ then
+        local camera = cameraNode_:GetComponent("Camera")
+        local ortho, camY = CalcContainOrthoSize()
+        camera.orthoSize = ortho
+        cameraNode_.position = Vector3(0, camY, -10)
+    end
 
-    -- Tab 切换皮肤编辑器
+    -- Tab 切换编辑器
     if input:GetKeyPress(KEY_TAB) then
-        ToggleSkinEditor()
+        ToggleEditorMenu()
+    end
+
+    -- 编辑器激活时，暂停游戏
+    if editorMenuOpen_ then
+        return
+    end
+    if terrainEditorOpen_ then
+        UpdateTerrainEditor(dt)
+        return
+    end
+    if skinEditorOpen_ then
+        return
     end
 
     if gameOver_ then
@@ -839,16 +1367,32 @@ end
 -- 拍照逻辑
 -- ============================================================================
 function SpawnPhotoZone()
-    -- 随机位置(确保在地图内)
-    local halfMap = CONFIG.MapWidth / 2 - CONFIG.PhotoWidth / 2 - 1
-    local zx = math.random() * halfMap * 2 - halfMap
-    local zy = CONFIG.GroundY + 1 + math.random() * (CONFIG.MapHeight - CONFIG.PhotoHeight - 2)
+    -- 收集未使用的预设索引
+    local available = {}
+    for i = 1, #PHOTO_PRESETS do
+        if not usedPresets_[i] then
+            available[#available + 1] = i
+        end
+    end
 
-    photoZone_.x = zx
-    photoZone_.y = zy
+    -- 全部用完则重置
+    if #available == 0 then
+        usedPresets_ = {}
+        for i = 1, #PHOTO_PRESETS do
+            available[#available + 1] = i
+        end
+    end
+
+    -- 等权重随机选取
+    local pick = available[math.random(#available)]
+    usedPresets_[pick] = true
+
+    local preset = PHOTO_PRESETS[pick]
+    photoZone_.x = preset.x
+    photoZone_.y = preset.y
     photoZone_.active = true
 
-    print(string.format("拍照区域出现: (%.1f, %.1f)", zx, zy))
+    print(string.format("拍照区域出现: %s (%.1f, %.1f)", preset.name, preset.x, preset.y))
 end
 
 function TakePhoto()
@@ -914,6 +1458,7 @@ function RestartGame()
     winner_ = ""
     photoZone_.active = false
     roundResult_ = {}
+    usedPresets_ = {}  -- 重置预设位置池
 
     for i, p in ipairs(players_) do
         p.score = 0
@@ -945,6 +1490,7 @@ function HandleNanoVGRender(eventType, eventData)
     DrawShowPhoto()
     DrawBulletin()
     DrawGameOver()
+    DrawTerrainEditor()
 
     nvgEndFrame(nvg_)
 end
@@ -1204,6 +1750,8 @@ function DrawSinglePlayer(params)
     local legH = r * 0.9
     local shoeW = r * 0.45
     local shoeH = r * 0.26
+    -- 编辑器偏移缩放因子（编辑器值基于 1080p 设计，ppu=100 时 r=40）
+    local editorScale = ppu / 100
 
     -- 身体中心偏移
     local torsoY = sy
@@ -1217,13 +1765,14 @@ function DrawSinglePlayer(params)
         local sc = skin.shoeColor
 
         -- ========== 1. 腿部 + 鞋子（最底层）==========
-        local legSpacing = torsoW * 0.22
+        local lt = skin.legTransform
+        local legSpacing = torsoW * 0.22 + (lt and lt.spacing or 0) * editorScale
         for side = -1, 1, 2 do
             local legAngle = side == -1 and limbSwing or -limbSwing
-            local legCX = sx + side * legSpacing
+            local legCX = sx + side * legSpacing + (lt and lt.offsetX or 0) * editorScale
 
             nvgSave(nvg_)
-            nvgTranslate(nvg_, legCX, hipY)
+            nvgTranslate(nvg_, legCX, hipY + (lt and lt.offsetY or 0) * editorScale)
             nvgRotate(nvg_, legAngle)
 
             nvgBeginPath(nvg_)
@@ -1242,7 +1791,7 @@ function DrawSinglePlayer(params)
         -- ========== 2. 躯干（图片，圆角矩形裁剪）==========
         local tt = skin.torsoTransform
         nvgSave(nvg_)
-        nvgTranslate(nvg_, sx + tt.offsetX, torsoY + tt.offsetY)
+        nvgTranslate(nvg_, sx + tt.offsetX * editorScale, torsoY + tt.offsetY * editorScale)
         nvgRotate(nvg_, math.rad(tt.rotation))
         nvgScale(nvg_, tt.scale, tt.scale)
 
@@ -1269,34 +1818,10 @@ function DrawSinglePlayer(params)
         end
         nvgRestore(nvg_)
 
-        -- ========== 3. 手臂 + 手掌 ==========
-        local shoulderY = torsoY - torsoH * 0.3
-        local armOffsetX = torsoW / 2 + armW * 0.3
-        for side = -1, 1, 2 do
-            local armAngle = side == -1 and armSwing or -armSwing
-            local armCX = sx + side * armOffsetX
-
-            nvgSave(nvg_)
-            nvgTranslate(nvg_, armCX, shoulderY)
-            nvgRotate(nvg_, armAngle)
-
-            nvgBeginPath(nvg_)
-            nvgRoundedRect(nvg_, -armW / 2, 0, armW, armH, armW * 0.4)
-            nvgFillColor(nvg_, nvgRGBA(ac[1], ac[2], ac[3], ac[4]))
-            nvgFill(nvg_)
-
-            nvgBeginPath(nvg_)
-            nvgCircle(nvg_, 0, armH + handR * 0.5, handR)
-            nvgFillColor(nvg_, nvgRGBA(hc[1], hc[2], hc[3], hc[4]))
-            nvgFill(nvg_)
-
-            nvgRestore(nvg_)
-        end
-
-        -- ========== 4. 头部（图片，圆形裁剪）==========
+        -- ========== 3. 头部（图片，圆形裁剪）==========
         local ht = skin.headTransform
         nvgSave(nvg_)
-        nvgTranslate(nvg_, sx + ht.offsetX, headY + ht.offsetY)
+        nvgTranslate(nvg_, sx + ht.offsetX * editorScale, headY + ht.offsetY * editorScale)
         nvgRotate(nvg_, math.rad(ht.rotation))
         nvgScale(nvg_, ht.scale, ht.scale)
 
@@ -1318,6 +1843,31 @@ function DrawSinglePlayer(params)
             nvgFill(nvg_)
         end
         nvgRestore(nvg_)
+
+        -- ========== 4. 手臂 + 手掌（最上层）==========
+        local at = skin.armTransform
+        local shoulderY = torsoY - torsoH * 0.3
+        local armOffsetX = torsoW / 2 + armW * 0.3 + (at and at.spacing or 0) * editorScale
+        for side = -1, 1, 2 do
+            local armAngle = side == -1 and armSwing or -armSwing
+            local armCX = sx + side * armOffsetX + (at and at.offsetX or 0) * editorScale
+
+            nvgSave(nvg_)
+            nvgTranslate(nvg_, armCX, shoulderY + (at and at.offsetY or 0) * editorScale)
+            nvgRotate(nvg_, armAngle)
+
+            nvgBeginPath(nvg_)
+            nvgRoundedRect(nvg_, -armW / 2, 0, armW, armH, armW * 0.4)
+            nvgFillColor(nvg_, nvgRGBA(ac[1], ac[2], ac[3], ac[4]))
+            nvgFill(nvg_)
+
+            nvgBeginPath(nvg_)
+            nvgCircle(nvg_, 0, armH + handR * 0.5, handR)
+            nvgFillColor(nvg_, nvgRGBA(hc[1], hc[2], hc[3], hc[4]))
+            nvgFill(nvg_)
+
+            nvgRestore(nvg_)
+        end
 
     else
         -- ========== 无皮肤回退：简单圆形 ==========
@@ -1360,6 +1910,23 @@ function DrawSinglePlayer(params)
     nvgFillColor(nvg_, nvgRGBA(c[1], c[2], c[3], 255))
     local nameY = skin and (headY - headR - 6) or (sy - r - 10)
     nvgText(nvg_, sx, nameY, name, nil)
+
+    -- ========== 碰撞体线框（调试） ==========
+    if showCollisionDebug_ then
+        nvgStrokeWidth(nvg_, 2.0)
+        -- 主碰撞圆（绿色）
+        nvgBeginPath(nvg_)
+        nvgCircle(nvg_, sx, sy, r)
+        nvgStrokeColor(nvg_, nvgRGBA(0, 255, 0, 200))
+        nvgStroke(nvg_)
+        -- 脚部传感器圆（黄色）
+        local footR = CONFIG.PlayerRadius * 0.6 * ppu
+        local footOffY = CONFIG.PlayerRadius * 0.9 * ppu
+        nvgBeginPath(nvg_)
+        nvgCircle(nvg_, sx, sy + footOffY, footR)
+        nvgStrokeColor(nvg_, nvgRGBA(255, 255, 0, 200))
+        nvgStroke(nvg_)
+    end
 end
 
 function DrawPlayers()
@@ -1375,7 +1942,7 @@ function DrawPlayers()
         local inAir = not p.onGround
         if inAir then
             limbSwing = 0.35
-            armSwing = -0.4
+            armSwing = -(math.pi + 0.4)
         elseif p.isMoving then
             limbSwing = math.sin(p.animTime) * 0.5
             armSwing = -math.sin(p.animTime) * 0.4
@@ -1605,7 +2172,7 @@ function DrawPlayersSnapshot()
 
         if inAir then
             limbSwing = 0.35
-            armSwing = -0.4
+            armSwing = -(math.pi + 0.4)
         elseif snap.isMoving then
             limbSwing = math.sin(snap.animTime) * 0.5
             armSwing = -math.sin(snap.animTime) * 0.4
