@@ -105,6 +105,11 @@ local screenH_ = 720
 -- 音效
 local shutterSound_ = nil
 
+-- 相机状态（用于 showPhoto 推进/恢复）
+local cameraNormalPos_ = Vector3(0, 0, -10)
+local cameraNormalOrtho_ = CONFIG.MapHeight
+local cameraZoomed_ = false
+
 -- ============================================================================
 -- 入口
 -- ============================================================================
@@ -151,7 +156,7 @@ function CreateScene()
     cameraNode_ = scene_:CreateChild("Camera")
     local camera = cameraNode_:CreateComponent("Camera")
     camera.orthographic = true
-    camera.orthoSize = CONFIG.MapHeight
+    camera.orthoSize = screenH_ / CONFIG.PixelPerUnit  -- 保持 PPU=50
     cameraNode_.position = Vector3(0, 0, -10)
 
     renderer:SetViewport(0, Viewport:new(scene_, camera))
@@ -364,6 +369,12 @@ function HandleUpdate(eventType, eventData)
     screenW_ = graphics:GetWidth()
     screenH_ = graphics:GetHeight()
 
+    -- 正常模式下：保持相机 orthoSize 与固定 PPU 一致
+    if not cameraZoomed_ then
+        local camera = cameraNode_:GetComponent("Camera")
+        camera.orthoSize = screenH_ / CONFIG.PixelPerUnit
+    end
+
     if gameOver_ then
         -- R 键重启
         if input:GetKeyPress(KEY_R) then
@@ -372,8 +383,10 @@ function HandleUpdate(eventType, eventData)
         return
     end
 
-    -- 更新玩家输入
-    UpdatePlayers(dt)
+    -- showPhoto 期间冻结玩家（拍照定格效果）
+    if gameState_ ~= "showPhoto" and gameState_ ~= "flash" then
+        UpdatePlayers(dt)
+    end
 
     -- 更新游戏状态机
     UpdateGameState(dt)
@@ -435,6 +448,8 @@ function UpdateGameState(dt)
         if flashTimer_ <= 0 then
             gameState_ = "showPhoto"
             showPhotoTimer_ = 1.5  -- 展示照片1.5秒
+            -- 推进相机到拍照区域
+            ZoomCameraToPhotoZone()
         end
 
     elseif gameState_ == "showPhoto" then
@@ -443,6 +458,8 @@ function UpdateGameState(dt)
             photoZone_.active = false
             gameState_ = "waiting"
             intervalTimer_ = CONFIG.IntervalTime
+            -- 恢复相机
+            RestoreCameraFromZoom()
         end
     end
 end
@@ -508,6 +525,48 @@ function TakePhoto()
     UpdateScoreUI()
 end
 
+-- ============================================================================
+-- 相机推进/恢复（拍照展示用）
+-- ============================================================================
+function ZoomCameraToPhotoZone()
+    -- 保存当前状态
+    cameraNormalPos_ = cameraNode_.position
+    local camera = cameraNode_:GetComponent("Camera")
+    cameraNormalOrtho_ = camera.orthoSize
+
+    -- 轻微缩放：仅缩小到正常的 80%，主要靠居中+暗色边框营造拍照感
+    -- 不要缩放太多，否则角色会变成"大胖球"
+    local targetOrtho = cameraNormalOrtho_ * 0.8
+
+    cameraNode_.position = Vector3(photoZone_.x, photoZone_.y, -10)
+    camera.orthoSize = targetOrtho
+    cameraZoomed_ = true
+
+    -- 冻结物理世界（玩家定格）
+    for _, p in ipairs(players_) do
+        p.savedVelocity = p.body.linearVelocity
+        p.body.linearVelocity = Vector2(0, 0)
+        p.body.gravityScale = 0
+    end
+end
+
+function RestoreCameraFromZoom()
+    if not cameraZoomed_ then return end
+    cameraNode_.position = cameraNormalPos_
+    local camera = cameraNode_:GetComponent("Camera")
+    camera.orthoSize = cameraNormalOrtho_
+    cameraZoomed_ = false
+
+    -- 恢复物理
+    for _, p in ipairs(players_) do
+        p.body.gravityScale = 1.0
+        if p.savedVelocity then
+            p.body.linearVelocity = p.savedVelocity
+            p.savedVelocity = nil
+        end
+    end
+end
+
 function UpdateScoreUI()
     for i, p in ipairs(players_) do
         local label = UI.FindById("score" .. i)
@@ -554,10 +613,22 @@ function HandleNanoVGRender(eventType, eventData)
     nvgEndFrame(nvg_)
 end
 
--- 物理坐标转屏幕坐标
+-- 当前每单位像素数（根据相机 orthoSize 动态计算）
+function GetPixelsPerUnit()
+    local camera = cameraNode_:GetComponent("Camera")
+    return screenH_ / camera.orthoSize
+end
+
+-- 物理坐标转屏幕坐标（相机感知）
 function PhysToScreen(px, py)
-    local sx = screenW_ / 2 + px * CONFIG.PixelPerUnit
-    local sy = screenH_ / 2 - py * CONFIG.PixelPerUnit
+    local camera = cameraNode_:GetComponent("Camera")
+    local orthoSize = camera.orthoSize
+    local camX = cameraNode_.position.x
+    local camY = cameraNode_.position.y
+    local ppu = screenH_ / orthoSize
+
+    local sx = screenW_ / 2 + (px - camX) * ppu
+    local sy = screenH_ / 2 - (py - camY) * ppu
     return sx, sy
 end
 
@@ -603,7 +674,7 @@ function DrawBackground()
     DrawMountain(screenH_ * 0.55, nvgRGBA(80, 160, 90, 255), 456)
 
     -- 草地（地面以下区域填充绿色）
-    local groundScreenY = screenH_ / 2 - CONFIG.GroundY * CONFIG.PixelPerUnit
+    local _, groundScreenY = PhysToScreen(0, CONFIG.GroundY)
     nvgBeginPath(nvg_)
     nvgRect(nvg_, 0, groundScreenY - 10, screenW_, screenH_ - groundScreenY + 10)
     local grassGrad = nvgLinearGradient(nvg_, 0, groundScreenY, 0, screenH_,
@@ -682,10 +753,11 @@ function DrawTree(x, y, height)
 end
 
 function DrawPlatforms()
+    local ppu = GetPixelsPerUnit()
     for _, plat in ipairs(platforms_) do
         local sx, sy = PhysToScreen(plat.x, plat.y)
-        local pw = plat.width * CONFIG.PixelPerUnit
-        local ph = plat.height * CONFIG.PixelPerUnit
+        local pw = plat.width * ppu
+        local ph = plat.height * ppu
 
         -- 土质平台外观
         nvgBeginPath(nvg_)
@@ -718,10 +790,12 @@ end
 
 function DrawPhotoZone()
     if not photoZone_.active then return end
+    if gameState_ == "showPhoto" then return end  -- 相机已推进，不绘制标记
 
+    local ppu = GetPixelsPerUnit()
     local sx, sy = PhysToScreen(photoZone_.x, photoZone_.y)
-    local pw = photoZone_.width * CONFIG.PixelPerUnit
-    local ph = photoZone_.height * CONFIG.PixelPerUnit
+    local pw = photoZone_.width * ppu
+    local ph = photoZone_.height * ppu
 
     -- 闪烁效果
     local alpha = 120 + math.floor(math.sin(os.clock() * 4) * 40)
@@ -767,10 +841,11 @@ function DrawPhotoZone()
 end
 
 function DrawPlayers()
+    local ppu = GetPixelsPerUnit()
     for i, p in ipairs(players_) do
         local pos = p.node.position2D
         local sx, sy = PhysToScreen(pos.x, pos.y)
-        local r = CONFIG.PlayerRadius * CONFIG.PixelPerUnit
+        local r = CONFIG.PlayerRadius * ppu
         local c = p.config.color
 
         -- 动画参数
@@ -981,120 +1056,74 @@ end
 function DrawShowPhoto()
     if gameState_ ~= "showPhoto" then return end
 
-    -- 半透明黑色背景
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, 0, 0, screenW_, screenH_)
-    nvgFillColor(nvg_, nvgRGBA(0, 0, 0, 160))
-    nvgFill(nvg_)
+    -- 相机已推进到拍照区域，viewport 就是"照片内容"
+    -- NanoVG 叠加拍立得相框效果
 
-    -- 拍立得照片框(放大居中展示)
-    local photoW = screenW_ * 0.55
-    local photoH = photoW * 0.7
-    local frameW = photoW + 30
-    local frameH = photoH + 80
-    local fx = (screenW_ - frameW) / 2
-    local fy = (screenH_ - frameH) / 2 - 20
+    -- 拍立得相框参数（按屏幕比例计算）
+    local borderLR = math.floor(screenW_ * 0.06)        -- 左右边框 ~6%
+    local borderTop = math.floor(screenH_ * 0.06)       -- 上边框 ~6%
+    local borderBottom = math.floor(screenH_ * 0.14)    -- 下边框大一些（放文字）
 
-    -- 弹出动画(从小到大)
-    local progress = math.min(1.0, (1.5 - showPhotoTimer_) / 0.25)
-    local scale = 0.5 + 0.5 * progress
-    local cx = screenW_ / 2
-    local cy = screenH_ / 2 - 20
+    -- 淡入动画
+    local progress = math.min(1.0, (1.5 - showPhotoTimer_) / 0.15)
 
     nvgSave(nvg_)
-    nvgTranslate(nvg_, cx, cy)
-    nvgScale(nvg_, scale, scale)
-    nvgTranslate(nvg_, -cx, -cy)
 
-    -- 阴影
+    -- 照片内容区域（中间不遮挡，保留游戏画面）
+    local photoX = borderLR
+    local photoY = borderTop
+    local photoW = screenW_ - borderLR * 2
+    local photoH = screenH_ - borderTop - borderBottom
+
+    -- 1) 半透明黑色遮罩四边（突出中间照片区域）
+    local maskAlpha = math.floor(180 * progress)
+    nvgFillColor(nvg_, nvgRGBA(0, 0, 0, maskAlpha))
+    -- 上
     nvgBeginPath(nvg_)
-    nvgRoundedRect(nvg_, fx + 6, fy + 6, frameW, frameH, 4)
-    nvgFillColor(nvg_, nvgRGBA(0, 0, 0, 120))
+    nvgRect(nvg_, 0, 0, screenW_, photoY)
+    nvgFill(nvg_)
+    -- 下
+    nvgBeginPath(nvg_)
+    nvgRect(nvg_, 0, photoY + photoH, screenW_, screenH_ - photoY - photoH)
+    nvgFill(nvg_)
+    -- 左
+    nvgBeginPath(nvg_)
+    nvgRect(nvg_, 0, photoY, photoX, photoH)
+    nvgFill(nvg_)
+    -- 右
+    nvgBeginPath(nvg_)
+    nvgRect(nvg_, photoX + photoW, photoY, screenW_ - photoX - photoW, photoH)
     nvgFill(nvg_)
 
-    -- 白色相框
+    -- 2) 白色相框边（拍立得风格）
+    local frameBorder = 4
     nvgBeginPath(nvg_)
-    nvgRoundedRect(nvg_, fx, fy, frameW, frameH, 4)
-    nvgFillColor(nvg_, nvgRGBA(250, 250, 245, 255))
-    nvgFill(nvg_)
-
-    -- 照片内容区(深色背景模拟场景)
-    local photoX = fx + 15
-    local photoY = fy + 15
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, photoX, photoY, photoW, photoH)
-    -- 模拟场景背景
-    local sceneBg = nvgLinearGradient(nvg_, photoX, photoY, photoX, photoY + photoH,
-        nvgRGBA(25, 25, 50, 255), nvgRGBA(40, 40, 80, 255))
-    nvgFillPaint(nvg_, sceneBg)
-    nvgFill(nvg_)
-
-    -- 绘制拍照区域边框(在照片内)
-    local zoneRelX = (photoZone_.x - (photoZone_.x - photoZone_.width/2)) / photoZone_.width
-    local zoneW = photoW * 0.9
-    local zoneH = photoH * 0.85
-    local zoneX = photoX + (photoW - zoneW) / 2
-    local zoneY = photoY + (photoH - zoneH) / 2
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, zoneX, zoneY, zoneW, zoneH)
-    nvgStrokeColor(nvg_, nvgRGBA(255, 220, 50, 150))
-    nvgStrokeWidth(nvg_, 2)
+    nvgRect(nvg_, photoX - frameBorder, photoY - frameBorder,
+            photoW + frameBorder * 2, photoH + frameBorder * 2)
+    nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, math.floor(240 * progress)))
+    nvgStrokeWidth(nvg_, frameBorder)
     nvgStroke(nvg_)
 
-    -- 在照片中绘制快照中的玩家
-    -- 计算照片内的缩放比例(物理单位 → 照片像素)
-    local scaleX = zoneW / photoZone_.width
-    local scaleY = zoneH / photoZone_.height
-    local pr = CONFIG.PlayerRadius * math.min(scaleX, scaleY)  -- 按比例缩放玩家半径
+    -- 5) 照片内暗角效果（四边渐暗）
+    local vigAlpha = math.floor(40 * progress)
+    -- 上暗角
+    nvgBeginPath(nvg_)
+    nvgRect(nvg_, photoX, photoY, photoW, photoH * 0.15)
+    local topVig = nvgLinearGradient(nvg_, photoX, photoY, photoX, photoY + photoH * 0.15,
+        nvgRGBA(0, 0, 0, vigAlpha), nvgRGBA(0, 0, 0, 0))
+    nvgFillPaint(nvg_, topVig)
+    nvgFill(nvg_)
+    -- 下暗角
+    nvgBeginPath(nvg_)
+    nvgRect(nvg_, photoX, photoY + photoH * 0.85, photoW, photoH * 0.15)
+    local botVig = nvgLinearGradient(nvg_, photoX, photoY + photoH * 0.85, photoX, photoY + photoH,
+        nvgRGBA(0, 0, 0, 0), nvgRGBA(0, 0, 0, vigAlpha))
+    nvgFillPaint(nvg_, botVig)
+    nvgFill(nvg_)
 
-    for i, snap in ipairs(photoSnapshot_) do
-        -- 将玩家物理位置映射到照片区域内
-        local relX = (snap.x - (photoZone_.x - photoZone_.width/2)) / photoZone_.width
-        local relY = 1.0 - (snap.y - (photoZone_.y - photoZone_.height/2)) / photoZone_.height
-        local px = zoneX + relX * zoneW
-        local py = zoneY + relY * zoneH
-
-        local c = players_[i].config.color
-        local inZone = snap.x >= photoZone_.x - photoZone_.width / 2
-                   and snap.x <= photoZone_.x + photoZone_.width / 2
-                   and snap.y >= photoZone_.y - photoZone_.height / 2
-                   and snap.y <= photoZone_.y + photoZone_.height / 2
-
-        if inZone then
-            -- 入镜玩家: 正常绘制 + 高亮
-            nvgBeginPath(nvg_)
-            nvgCircle(nvg_, px, py, pr + 4)
-            nvgFillColor(nvg_, nvgRGBA(255, 220, 50, 150))
-            nvgFill(nvg_)
-
-            nvgBeginPath(nvg_)
-            nvgCircle(nvg_, px, py, pr)
-            nvgFillColor(nvg_, nvgRGBA(c[1], c[2], c[3], 255))
-            nvgFill(nvg_)
-
-            -- 眼睛
-            local eyeScale = pr / 20  -- 基于半径的缩放因子
-            local eyeOff = snap.facing * 5 * eyeScale
-            nvgBeginPath(nvg_)
-            nvgCircle(nvg_, px + eyeOff - 4 * eyeScale, py - 4 * eyeScale, 3 * eyeScale)
-            nvgCircle(nvg_, px + eyeOff + 4 * eyeScale, py - 4 * eyeScale, 3 * eyeScale)
-            nvgFillColor(nvg_, nvgRGBA(255, 255, 255, 255))
-            nvgFill(nvg_)
-        else
-            -- 未入镜: 半透明灰色(在照片外但作为参考显示)
-            -- 限制显示范围在照片内
-            px = math.max(photoX + pr, math.min(photoX + photoW - pr, px))
-            py = math.max(photoY + pr, math.min(photoY + photoH - pr, py))
-            nvgBeginPath(nvg_)
-            nvgCircle(nvg_, px, py, pr * 0.7)
-            nvgFillColor(nvg_, nvgRGBA(c[1], c[2], c[3], 80))
-            nvgFill(nvg_)
-        end
-    end
-
-    -- 照片底部文字(在白色相框下方空间)
-    local textY = photoY + photoH + 35
-    nvgFontSize(nvg_, 20)
+    -- 6) 底部结果文字（白色大字，在黑色遮罩区域上）
+    local textY = photoY + photoH + borderBottom * 0.5
+    nvgFontSize(nvg_, math.max(22, math.floor(screenH_ * 0.038)))
     nvgFontFace(nvg_, "sans")
     nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
 
@@ -1103,12 +1132,18 @@ function DrawShowPhoto()
         for _, idx in ipairs(roundResult_) do
             table.insert(names, players_[idx].config.name)
         end
-        nvgFillColor(nvg_, nvgRGBA(50, 150, 50, 255))
-        nvgText(nvg_, cx, textY, "📸 入镜: " .. table.concat(names, " & ") .. "  +1!", nil)
+        nvgFillColor(nvg_, nvgRGBA(100, 255, 100, math.floor(255 * progress)))
+        nvgText(nvg_, screenW_ / 2, textY, "📸 " .. table.concat(names, " & ") .. " 入镜! +1", nil)
     else
-        nvgFillColor(nvg_, nvgRGBA(180, 80, 80, 255))
-        nvgText(nvg_, cx, textY, "😢 没人入镜!", nil)
+        nvgFillColor(nvg_, nvgRGBA(255, 120, 120, math.floor(255 * progress)))
+        nvgText(nvg_, screenW_ / 2, textY, "😢 没人入镜!", nil)
     end
+
+    -- 7) 顶部 "PHOTO" 小标签（白色，在黑色遮罩区域上）
+    nvgFontSize(nvg_, 14)
+    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg_, nvgRGBA(255, 255, 255, math.floor(200 * progress)))
+    nvgText(nvg_, screenW_ / 2, photoY * 0.5, "📷 PHOTO", nil)
 
     nvgRestore(nvg_)
 end
