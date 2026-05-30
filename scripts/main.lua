@@ -1,16 +1,29 @@
 -- ============================================================================
--- 三人抓拍游戏 (Photo Rush)
--- 玩法: 3个玩家在同一地图上，随机刷新拍照区域，倒计时结束时
---       在区域内的玩家获得分数
+-- Photo Rush - 团队抓拍游戏 (模块化版本)
+-- 玩法: 多人在同一地图上，随机刷新拍照区域，倒计时结束时在区域内的玩家获得分数
 -- 操作:
 --   玩家1 (红色): Q=左, W=跳跃, E=右
 --   玩家2 (绿色): A=左, S=跳跃, D=右
 --   玩家3 (蓝色): Z=左, X=跳跃, C=右
+--   玩家4 (橙色): U=左, I=跳跃, O=右
 -- ============================================================================
 
 require "LuaScripts/Utilities/Sample"
 local UI = require("urhox-libs/UI")
 
+-- 模块引用
+local Cfg = require("config")
+local Gameplay = require("gameplay")
+local Render = require("render")
+local Editors = require("editors")
+
+-- 快捷引用配置
+local CONFIG = Cfg.CONFIG
+local PLAYERS = Cfg.PLAYERS
+local MAP_DATA = Cfg.MAP_DATA
+local GAMEPLAY_DATA = Cfg.GAMEPLAY_DATA
+local UNLOCK_CONFIG = Cfg.UNLOCK_CONFIG
+local PHOTO_PRESETS = Cfg.PHOTO_PRESETS
 
 -- ============================================================================
 -- 皮肤系统
@@ -29,7 +42,7 @@ local function ParseHexColor(hex)
     return r, g, b, a
 end
 
---- 皮肤身份信息（与 docs/skins.json 保持同步）
+--- 皮肤身份信息
 local function LoadSkinsConfig()
     return {
         {
@@ -53,7 +66,7 @@ local function LoadSkinsConfig()
     }
 end
 
---- 编辑器 Transform 数据（运行时从 assets/skin-editor.json 读取）
+--- 编辑器 Transform 数据
 local function LoadSkinEditorConfig()
     local default = {
         playerScale = 1.0,
@@ -64,20 +77,27 @@ local function LoadSkinEditorConfig()
         armTransform = { offsetX = 0, offsetY = 0, spacing = 0 },
         legTransform = { offsetX = 0, offsetY = 0, spacing = 0 },
     }
-    -- 优先从用户沙箱读取（编辑器保存的数据），fallback 到 assets 默认值
     local jsonStr = nil
-    if fileSystem:FileExists("skin-editor.json") then
-        local file = File("skin-editor.json", FILE_READ)
-        if file:IsOpen() then
-            jsonStr = file:ReadString()
-            file:Close()
+    local docsFile = cache:GetFile("docs/skin-editor.json")
+    if docsFile then
+        jsonStr = docsFile:ReadString()
+        docsFile:Close()
+    end
+    if not jsonStr or #jsonStr == 0 then
+        if fileSystem:FileExists("skin-editor.json") then
+            local file = File("skin-editor.json", FILE_READ)
+            if file:IsOpen() then
+                jsonStr = file:ReadString()
+                file:Close()
+            end
         end
     end
     if not jsonStr or #jsonStr == 0 then
         local file = cache:GetFile("skin-editor.json")
-        if not file then return default end
-        jsonStr = file:ReadString()
-        file:Close()
+        if file then
+            jsonStr = file:ReadString()
+            file:Close()
+        end
     end
     if not jsonStr or #jsonStr == 0 then return default end
     local ok, data = pcall(cjson.decode, jsonStr)
@@ -94,76 +114,14 @@ local function LoadSkinEditorConfig()
 end
 
 -- 皮肤数据（运行时）
-local skinsData_ = {}     -- 从 JSON 解析的原始数据
-local skinsRuntime_ = {}  -- 运行时数据（含 NanoVG 图片句柄）
-local showCollisionDebug_ = false  -- 是否显示碰撞体线框
+local skinsData_ = {}
+local skinsRuntime_ = {}
+local showCollisionDebug_ = false
 
--- 角色物理/缩放参数（从 skin-editor.json 加载）
+-- 角色物理/缩放参数
 local playerScale_ = 1.0
 local capsuleRadius_ = 0.3
 local capsuleHeight_ = 1.0
-
--- ============================================================================
--- 游戏配置
--- ============================================================================
-local CONFIG = {
-    Title = "Photo Rush - 团队抓拍",
-    Gravity = 20.0,
-    OrthoSize = 10.8,     -- 固定正交尺寸(匹配1920x1080设计)
-
-    -- 地图(16:9 → 宽19.2, 高10.8)
-    MapWidth = 19.2,      -- 地图宽度(物理单位)
-    MapHeight = 10.8,     -- 地图高度
-    GroundY = -5.0,       -- 地面中心Y(高度0.8, 底部=-5.4=屏幕底)
-
-    -- 玩家
-    PlayerRadius = 0.4,
-    PlayerSpeed = 6.0,
-    PlayerJumpSpeed = 11.0,
-    JumpCutMultiplier = 0.4,  -- 松开跳跃键时，上升速度乘以此系数（越小截断越狠）
-
-    -- 拍照区域
-    PhotoWidth = 4.0,       -- 拍照区域宽度(400px / 1920 * 19.2)
-    PhotoHeight = 2.25,     -- 拍照区域高度(225px / 1080 * 10.8)
-    CountdownTime = 5.0,    -- 倒计时秒数
-    IntervalTime = 3.0,     -- 两次拍照间隔
-
-    -- 分数
-    ScorePerPhoto = 1,      -- 每次拍照得分
-    WinScore = 5,           -- 胜利所需分数
-}
-
--- 玩家数据定义
-local PLAYERS = {
-    {
-        name = "P1",
-        color = {220, 60, 60, 255},       -- 红色（备用/名牌色）
-        keys = {left = KEY_Q, jump = KEY_W, right = KEY_E},
-        spawnX = -6,
-        skinIndex = 1,
-    },
-    {
-        name = "P2",
-        color = {60, 200, 60, 255},       -- 绿色
-        keys = {left = KEY_A, jump = KEY_S, right = KEY_D},
-        spawnX = -2,
-        skinIndex = 1,
-    },
-    {
-        name = "P3",
-        color = {60, 100, 220, 255},      -- 蓝色
-        keys = {left = KEY_Z, jump = KEY_X, right = KEY_C},
-        spawnX = 2,
-        skinIndex = 2,
-    },
-    {
-        name = "P4",
-        color = {220, 160, 40, 255},      -- 橙黄色
-        keys = {left = KEY_U, jump = KEY_I, right = KEY_O},
-        spawnX = 6,
-        skinIndex = 2,
-    },
-}
 
 -- ============================================================================
 -- 全局状态
@@ -176,62 +134,61 @@ local physicsWorld_ = nil
 local nvg_ = nil
 
 -- 玩家状态
-local players_ = {}  -- {node, body, onGround, groundContacts, score, facing, animTime, isMoving, velY}
+local players_ = {}
 
 -- 队伍系统
 local teams_ = {
     [1] = { name = "蓝队", color = {80, 140, 255, 255}, members = {}, score = 0 },
     [2] = { name = "红队", color = {255, 90, 80, 255}, members = {}, score = 0 },
 }
-local playerTeam_ = {}  -- playerTeam_[playerIndex] = teamIndex (1 or 2)
+local playerTeam_ = {}
 
 -- 拍照区域状态
 local photoZone_ = {
     active = false,
-    x = 0,
-    y = 0,
+    x = 0, y = 0,
     width = CONFIG.PhotoWidth,
     height = CONFIG.PhotoHeight,
 }
-
--- 6个预设拍照位置(中心坐标)，权重相同
-local PHOTO_PRESETS = {
-    { x = -4.8, y = 0.4,  name = "常规" },
-    { x = 0.0,  y = 2.5,  name = "高度" },
-    { x = 5.8,  y = 2.0,  name = "多路径" },
-    { x = 3.0,  y = -2.7, name = "底部略高" },
-    { x = 5.8,  y = -3.8, name = "角落" },
-    { x = 2.5,  y = 1.0,  name = "常规2" },
-}
-local usedPresets_ = {}  -- 已出现过的预设索引集合
+local usedPresets_ = {}
 
 -- 游戏状态
-local gameState_ = "bulletin"  -- bulletin, countdown, flash, showPhoto
+local gameState_ = "lobby"
 local countdown_ = 0
-local flashTimer_ = 0         -- 拍照闪光效果
-local showPhotoTimer_ = 0     -- 展示照片计时
-local roundResult_ = {}       -- 本轮结果(入镜玩家索引)
-local photoSnapshot_ = {}     -- 拍照瞬间玩家位置快照
+local prepTimer_ = 0
+local flashTimer_ = 0
+local showPhotoTimer_ = 0
+local roundResult_ = {}
+local photoSnapshot_ = {}
 local gameOver_ = false
 local winner_ = ""
 
--- 公告板状态
-local bulletin_ = {
-    round = 1,                -- 当前关卡
-    confirmed = {},           -- 各玩家是否确认 {false, false, false}
-    animPhase = "enter",      -- "enter"=弹入, "stay"=等待确认, "exit"=收起
-    animTimer = 0,            -- 动画计时器
-    enterDuration = 0.4,      -- 弹入动画时长
-    exitDuration = 0.35,      -- 收起动画时长
+-- 大厅状态
+local lobby_ = {
+    slots = {
+        { joined = false, skinIndex = 1, ready = false },
+        { joined = false, skinIndex = 1, ready = false },
+        { joined = false, skinIndex = 2, ready = false },
+        { joined = false, skinIndex = 2, ready = false },
+    },
+    animTime = 0,
+    xButtonRects = {},
 }
 
--- 关卡玩法描述（预留扩展）
-local ROUND_DESCRIPTIONS = {
-    "跑进📷拍照区域，倒计时结束时入镜得分！",
-    "拍照区域随机出现，抢占有利位置！",
-    "争分夺秒，冲进取景框！",
-    "站在📷里就能得分，别落下！",
-    "找到拍照区域，坚持到快门响起！",
+-- 公告板状态
+local bulletin_ = {
+    round = 1,
+    confirmed = {},
+    animPhase = "enter",
+    animTimer = 0,
+    enterDuration = 0.4,
+    exitDuration = 0.35,
+}
+
+-- 解锁系统运行时状态
+local unlock_ = {
+    currentMapLevel = 1,
+    currentGameplayIndex = 1,
 }
 
 -- 平台数据
@@ -244,31 +201,125 @@ local screenH_ = 720
 -- 音效
 local shutterSound_ = nil
 
--- 相机状态（用于 showPhoto 推进/恢复）
+-- 相机状态
 local cameraNormalPos_ = Vector3(0, 0, -10)
-local cameraNormalOrtho_ = CONFIG.OrthoSize  -- 会在运行时被 CalcContainOrthoSize() 更新
+local cameraNormalOrtho_ = CONFIG.OrthoSize
 local cameraZoomed_ = false
 
--- 皮肤编辑器状态
-local skinEditorOpen_ = false
-local skinEditorPanel_ = nil
-local skinEditorAnimTime_ = 0  -- 预览动画计时器
+-- ============================================================================
+-- 共享游戏状态对象 G（传递给 render/editors 模块）
+-- ============================================================================
+local G = {}
 
--- 编辑器菜单状态
-local editorMenuOpen_ = false
-local editorMenuPanel_ = nil
-
--- 地形编辑器状态
-local terrainEditorOpen_ = false
-local terrainEditorPanel_ = nil
-local terrainSelected_ = nil      -- 选中的平台索引
-local terrainDragMode_ = "none"   -- "none", "move", "left", "right", "top", "bottom"
-local terrainDragStart_ = {sx = 0, sy = 0}  -- 拖拽起始屏幕坐标
-local terrainDragOrigin_ = {x = 0, y = 0, width = 0, height = 0}  -- 拖拽起始时的平台数据
-local terrainMouseDown_ = false
+local function SyncGameState()
+    G.nvg = nvg_
+    G.screenW = screenW_
+    G.screenH = screenH_
+    G.cameraNode = cameraNode_
+    G.players = players_
+    G.platforms = platforms_
+    G.photoZone = photoZone_
+    G.gameState = gameState_
+    G.bulletin = bulletin_
+    G.unlock = unlock_
+    G.teams = teams_
+    G.playerTeam = playerTeam_
+    G.roundResult = roundResult_
+    G.photoSnapshot = photoSnapshot_
+    G.playerScale = playerScale_
+    G.capsuleHeight = capsuleHeight_
+    G.capsuleRadius = capsuleRadius_
+    G.showCollisionDebug = showCollisionDebug_
+    G.skinsRuntime = skinsRuntime_
+    G.skinEditorOpen = Editors.skinEditorOpen
+    G.skinEditorAnimTime = Editors.skinEditorAnimTime
+    G.gameOver = gameOver_
+    G.winner = winner_
+    G.prepTimer = prepTimer_
+    G.countdown = countdown_
+    G.flashTimer = flashTimer_
+    G.showPhotoTimer = showPhotoTimer_
+    G.getUnlockValue = function() return Gameplay.GetUnlockValue(teams_) end
+end
 
 -- ============================================================================
--- 入口
+-- 解锁系统逻辑（对接 Gameplay 模块）
+-- ============================================================================
+
+function GetWinScore()
+    local teamSize = math.max(1, #players_ / 2)
+    return teamSize * 20
+end
+
+function GetUnlockValue()
+    return Gameplay.GetUnlockValue(teams_)
+end
+
+--- 切换地图
+function SwitchMap(newMapLevel)
+    local mapData = MAP_DATA[newMapLevel]
+    if not mapData then return end
+
+    -- 移除旧平台节点（保留地面 platforms_[1]）
+    for i = #platforms_, 2, -1 do
+        if platforms_[i].node then
+            platforms_[i].node:Remove()
+        end
+        table.remove(platforms_, i)
+    end
+
+    -- 创建新平台
+    for _, data in ipairs(mapData.platforms) do
+        local node = scene_:CreateChild("Platform")
+        node:SetPosition2D(data.x, data.y)
+        node:AddTag("one_way_platform")
+        local body = node:CreateComponent("RigidBody2D")
+        body.bodyType = BT_STATIC
+        local shape = node:CreateComponent("CollisionBox2D")
+        shape:SetSize(data.width, data.height)
+        shape.friction = 0.3
+        shape.restitution = 0.0
+        shape.categoryBits = 1
+        local platEntry = {x = data.x, y = data.y, width = data.width, height = data.height, node = node}
+        table.insert(platforms_, platEntry)
+    end
+
+    -- 重置玩家位置
+    for i, p in ipairs(players_) do
+        local spawn = mapData.spawnPoints[i]
+        if spawn then
+            p.node:SetPosition2D(spawn.x, spawn.y)
+        else
+            p.node:SetPosition2D(0, CONFIG.GroundY + 2)
+        end
+        p.body.linearVelocity = Vector2(0, 0)
+        p.body.awake = true
+    end
+
+    unlock_.currentMapLevel = newMapLevel
+    print(string.format("[Unlock] 地图切换为: %s (等级 %d)", mapData.name, newMapLevel))
+end
+
+--- 每轮开始时的解锁检查
+function CheckUnlockAndPrepareRound()
+    local unlockValue = GetUnlockValue()
+    print(string.format("[Unlock] 当前解锁值: %.1f", unlockValue))
+
+    local targetMapLevel = Gameplay.GetMapLevelForUnlockValue(unlockValue)
+    if targetMapLevel ~= unlock_.currentMapLevel then
+        SwitchMap(targetMapLevel)
+    end
+
+    local unlockedGameplays = Gameplay.GetUnlockedGameplays(unlockValue)
+    local selectedGameplay = Gameplay.SelectGameplayByWeight(unlockedGameplays)
+    unlock_.currentGameplayIndex = selectedGameplay
+
+    local gp = GAMEPLAY_DATA[selectedGameplay]
+    print(string.format("[Unlock] 本轮玩法: %s (权重 %d, 已解锁 %d 个玩法)", gp.name, gp.weight, #unlockedGameplays))
+end
+
+-- ============================================================================
+-- Start
 -- ============================================================================
 function Start()
     SampleStart()
@@ -285,18 +336,17 @@ function Start()
 
     CreateScene()
     CreateWorld()
-    CreatePlayers()
-    AssignTeams()
     CreateUI()
-    CreateSkinEditor()
-    CreateTerrainEditor()
-    CreateEditorMenu()
 
-    -- 初始化公告板
-    bulletin_.confirmed = {}
-    for i = 1, #PLAYERS do
-        bulletin_.confirmed[i] = false
-    end
+    -- 初始化模块
+    SyncGameState()
+    Render.Init(G)
+    Editors.Init(G, Render)
+
+    -- 创建编辑器 UI
+    Editors.CreateSkinEditor()
+    Editors.CreateTerrainEditor()
+    Editors.CreateEditorMenu()
 
     SubscribeToEvent("Update", "HandleUpdate")
     SubscribeToEvent(nvg_, "NanoVGRender", "HandleNanoVGRender")
@@ -304,12 +354,12 @@ function Start()
     SubscribeToEvent("PhysicsEndContact2D", "HandleEndContact")
     SubscribeToEvent("PhysicsUpdateContact2D", "HandleUpdateContact")
 
-
-    print("=== Photo Rush 四人团队抓拍游戏启动 ===")
-    print("P1(红): Q左 W跳 E右 | P2(绿): A左 S跳 D右 | P3(蓝): Z左 X跳 C右 | P4(橙): U左 I跳 O右")
+    gameState_ = "lobby"
+    print("=== Photo Rush 团队抓拍游戏启动 ===")
+    print("按跳跃键加入: W / S / X / I")
 end
 
---- 解析 transform 字段，提供默认值
+--- 解析 transform 字段
 local function ParseTransform(t)
     if not t then return { scale = 1.0, offsetX = 0, offsetY = 0, rotation = 0 } end
     return {
@@ -326,12 +376,10 @@ function LoadSkins()
     local editorCfg = LoadSkinEditorConfig()
     skinsRuntime_ = {}
 
-    -- 更新全局物理/缩放参数
     playerScale_ = editorCfg.playerScale
     capsuleRadius_ = editorCfg.capsuleRadius
     capsuleHeight_ = editorCfg.capsuleHeight
 
-    -- 合并 editor transform 到 skinsData
     for _, skin in ipairs(skinsData_) do
         skin.headTransform = editorCfg.headTransform
         skin.torsoTransform = editorCfg.torsoTransform
@@ -363,628 +411,6 @@ function LoadSkins()
 end
 
 -- ============================================================================
--- 皮肤编辑器 UI
--- ============================================================================
-function CreateSkinEditor()
-    if #skinsRuntime_ == 0 then return end
-    local skin = skinsRuntime_[1]  -- 编辑第一套皮肤
-
-    --- 创建一行 Slider 控制器
-    local function MakeSlider(label, min, max, value, step, onChange)
-        return UI.Panel {
-            flexDirection = "row", alignItems = "center", gap = 8,
-            height = 28,
-            children = {
-                UI.Label { text = label, fontSize = 12, fontColor = {200, 200, 200, 255}, width = 60 },
-                UI.Slider {
-                    width = 120, height = 16,
-                    min = min, max = max, value = value, step = step,
-                    onChange = onChange,
-                },
-                UI.Label {
-                    id = "val_" .. label,
-                    text = string.format("%.1f", value),
-                    fontSize = 11, fontColor = {160, 160, 160, 255}, width = 40,
-                },
-            }
-        }
-    end
-
-    local function updateVal(label, v)
-        local lbl = UI.FindById("val_" .. label)
-        if lbl then lbl:SetText(string.format("%.1f", v)) end
-    end
-
-    skinEditorPanel_ = UI.Panel {
-        id = "skinEditor",
-        position = "absolute",
-        top = 50, right = 10,
-        backgroundColor = {20, 20, 30, 220},
-        borderRadius = 8,
-        padding = 10,
-        gap = 6,
-        children = {
-            UI.Label { text = "Skin Editor (Tab 关闭)", fontSize = 14, fontColor = {255, 220, 100, 255} },
-            -- 双列布局：控制 + 躯干
-            UI.Panel {
-                flexDirection = "row", gap = 10,
-                children = {
-                    -- ===== 左列：角色 + 头部 + 手臂 + 腿部 =====
-                    UI.Panel {
-                        width = 240, gap = 4,
-                        children = {
-                            UI.Label { text = "── 角色 ──", fontSize = 12, fontColor = {150, 200, 255, 255} },
-                            MakeSlider("P.Scale", 0.5, 2.0, playerScale_, 0.1, function(self, v)
-                                playerScale_ = v; updateVal("P.Scale", v)
-                            end),
-                            MakeSlider("Cap.R", 0.1, 0.8, capsuleRadius_, 0.05, function(self, v)
-                                capsuleRadius_ = v; updateVal("Cap.R", v)
-                            end),
-                            MakeSlider("Cap.H", 0.4, 2.0, capsuleHeight_, 0.05, function(self, v)
-                                capsuleHeight_ = v; updateVal("Cap.H", v)
-                            end),
-                            UI.Label { text = "── 头部 ──", fontSize = 12, fontColor = {150, 200, 255, 255} },
-                            MakeSlider("H.Scale", 0.2, 3.0, skin.headTransform.scale, 0.1, function(self, v)
-                                skin.headTransform.scale = v; updateVal("H.Scale", v)
-                            end),
-                            MakeSlider("H.OffX", -30, 30, skin.headTransform.offsetX, 1, function(self, v)
-                                skin.headTransform.offsetX = v; updateVal("H.OffX", v)
-                            end),
-                            MakeSlider("H.OffY", -30, 30, skin.headTransform.offsetY, 1, function(self, v)
-                                skin.headTransform.offsetY = v; updateVal("H.OffY", v)
-                            end),
-                            MakeSlider("H.Rot", -180, 180, skin.headTransform.rotation, 1, function(self, v)
-                                skin.headTransform.rotation = v; updateVal("H.Rot", v)
-                            end),
-                            UI.Label { text = "── 手臂 ──", fontSize = 12, fontColor = {150, 200, 255, 255} },
-                            MakeSlider("A.OffX", -30, 30, skin.armTransform.offsetX, 1, function(self, v)
-                                skin.armTransform.offsetX = v; updateVal("A.OffX", v)
-                            end),
-                            MakeSlider("A.OffY", -30, 30, skin.armTransform.offsetY, 1, function(self, v)
-                                skin.armTransform.offsetY = v; updateVal("A.OffY", v)
-                            end),
-                            MakeSlider("A.Gap", -20, 20, skin.armTransform.spacing, 1, function(self, v)
-                                skin.armTransform.spacing = v; updateVal("A.Gap", v)
-                            end),
-                            UI.Label { text = "── 腿部 ──", fontSize = 12, fontColor = {150, 200, 255, 255} },
-                            MakeSlider("L.OffX", -30, 30, skin.legTransform.offsetX, 1, function(self, v)
-                                skin.legTransform.offsetX = v; updateVal("L.OffX", v)
-                            end),
-                            MakeSlider("L.OffY", -30, 30, skin.legTransform.offsetY, 1, function(self, v)
-                                skin.legTransform.offsetY = v; updateVal("L.OffY", v)
-                            end),
-                            MakeSlider("L.Gap", -20, 20, skin.legTransform.spacing, 1, function(self, v)
-                                skin.legTransform.spacing = v; updateVal("L.Gap", v)
-                            end),
-                        }
-                    },
-                    -- ===== 右列：躯干 =====
-                    UI.Panel {
-                        width = 240, gap = 4,
-                        children = {
-                            UI.Label { text = "── 躯干 ──", fontSize = 12, fontColor = {150, 200, 255, 255} },
-                            MakeSlider("T.Scale", 0.2, 3.0, skin.torsoTransform.scale, 0.1, function(self, v)
-                                skin.torsoTransform.scale = v; updateVal("T.Scale", v)
-                            end),
-                            MakeSlider("T.OffX", -30, 30, skin.torsoTransform.offsetX, 1, function(self, v)
-                                skin.torsoTransform.offsetX = v; updateVal("T.OffX", v)
-                            end),
-                            MakeSlider("T.OffY", -30, 30, skin.torsoTransform.offsetY, 1, function(self, v)
-                                skin.torsoTransform.offsetY = v; updateVal("T.OffY", v)
-                            end),
-                            MakeSlider("T.Rot", -180, 180, skin.torsoTransform.rotation, 1, function(self, v)
-                                skin.torsoTransform.rotation = v; updateVal("T.Rot", v)
-                            end),
-                        }
-                    },
-
-                }
-            },
-            -- 底部操作区
-            UI.Panel {
-                flexDirection = "row", alignItems = "center", gap = 12,
-                children = {
-                    UI.Panel {
-                        flexDirection = "row", alignItems = "center", gap = 8,
-                        children = {
-                            UI.Label { text = "显示碰撞体", fontSize = 12, fontColor = {200, 200, 200, 255} },
-                            UI.Toggle {
-                                value = showCollisionDebug_,
-                                onChange = function(self, v)
-                                    showCollisionDebug_ = v
-                                end,
-                            },
-                        }
-                    },
-                    UI.Button {
-                        text = "保存配置", variant = "primary", height = 30,
-                        onClick = function()
-                            local ht = skin.headTransform
-                            local tt = skin.torsoTransform
-                            local at = skin.armTransform
-                            local lt = skin.legTransform
-                            local content = string.format(
-                                '{\n'
-                                .. '  "playerScale": %.2f,\n'
-                                .. '  "capsuleRadius": %.2f,\n'
-                                .. '  "capsuleHeight": %.2f,\n'
-                                .. '  "headTransform": { "scale": %.1f, "offsetX": %g, "offsetY": %g, "rotation": %g },\n'
-                                .. '  "torsoTransform": { "scale": %.1f, "offsetX": %g, "offsetY": %g, "rotation": %g },\n'
-                                .. '  "armTransform": { "offsetX": %g, "offsetY": %g, "spacing": %g },\n'
-                                .. '  "legTransform": { "offsetX": %g, "offsetY": %g, "spacing": %g }\n'
-                                .. '}\n',
-                                playerScale_, capsuleRadius_, capsuleHeight_,
-                                ht.scale, ht.offsetX, ht.offsetY, ht.rotation,
-                                tt.scale, tt.offsetX, tt.offsetY, tt.rotation,
-                                at.offsetX, at.offsetY, at.spacing,
-                                lt.offsetX, lt.offsetY, lt.spacing
-                            )
-                            -- 保存到用户沙箱文件（下次运行自动加载）
-                            local saveFile = File("skin-editor.json", FILE_WRITE)
-                            if saveFile:IsOpen() then
-                                saveFile:WriteString(content)
-                                saveFile:Close()
-                                print("[SkinEditor] Config saved to skin-editor.json")
-                            end
-                            -- 写入系统剪贴板
-                            ui.useSystemClipboard = true
-                            ui:SetClipboardText(content)
-                            -- 弹窗作为视觉反馈 + WASM 环境后备
-                            ShowExportPopup(content)
-                        end
-                    },
-                }
-            },
-        }
-    }
-    skinEditorPanel_:SetVisible(false)
-
-    -- 挂载到 UI 根节点
-    local root = UI.FindById("root")
-    if root then
-        root:AddChild(skinEditorPanel_)
-    end
-end
-
--- 导出弹窗（显示可复制的文本）
-local exportPopup_ = nil
-
-function ShowExportPopup(content)
-    -- 关闭已有弹窗
-    if exportPopup_ then
-        exportPopup_:Remove()
-        exportPopup_ = nil
-    end
-
-    exportPopup_ = UI.Panel {
-        position = "absolute",
-        top = 0, left = 0, right = 0, bottom = 0,
-        backgroundColor = {0, 0, 0, 180},
-        justifyContent = "center",
-        alignItems = "center",
-        children = {
-            UI.Panel {
-                width = 420, maxHeight = "80%",
-                backgroundColor = {30, 30, 40, 250},
-                borderRadius = 10,
-                padding = 16,
-                gap = 10,
-                children = {
-                    UI.Label { text = "已复制到剪贴板（如未生效请手动复制）", fontSize = 14, fontColor = {255, 220, 100, 255} },
-                    UI.ScrollView {
-                        width = "100%",
-                        height = 260,
-                        children = {
-                            UI.Label {
-                                text = content,
-                                fontSize = 11,
-                                fontColor = {220, 220, 220, 255},
-                                fontFamily = "monospace",
-                                selectable = true,
-                            },
-                        }
-                    },
-                    UI.Button {
-                        text = "关闭", variant = "outline", height = 30,
-                        onClick = function()
-                            if exportPopup_ then
-                                exportPopup_:Remove()
-                                exportPopup_ = nil
-                            end
-                        end
-                    },
-                }
-            }
-        }
-    }
-
-    local root = UI.FindById("root")
-    if root then
-        root:AddChild(exportPopup_)
-    end
-end
-
-function ToggleSkinEditor()
-    if skinEditorPanel_ == nil then return end
-    skinEditorOpen_ = not skinEditorOpen_
-    skinEditorPanel_:SetVisible(skinEditorOpen_)
-end
-
--- ============================================================================
--- 地形编辑器
--- ============================================================================
-
---- 屏幕坐标转物理坐标（PhysToScreen 的逆运算）
-function ScreenToPhys(sx, sy)
-    local camera = cameraNode_:GetComponent("Camera")
-    local orthoSize = camera.orthoSize
-    local camX = cameraNode_.position.x
-    local camY = cameraNode_.position.y
-    local ppu = screenH_ / orthoSize
-
-    local px = camX + (sx - screenW_ / 2) / ppu
-    local py = camY - (sy - screenH_ / 2) / ppu
-    return px, py
-end
-
-function ToggleTerrainEditor()
-    terrainEditorOpen_ = not terrainEditorOpen_
-    if terrainEditorPanel_ then
-        terrainEditorPanel_:SetVisible(terrainEditorOpen_)
-    end
-    if not terrainEditorOpen_ then
-        terrainSelected_ = nil
-        terrainDragMode_ = "none"
-        terrainMouseDown_ = false
-    end
-end
-
---- 编辑器菜单总控：Tab 键统一入口
-function ToggleEditorMenu()
-    -- 如果有编辑器正在打开 → 关闭它，回到游戏
-    if terrainEditorOpen_ then
-        ToggleTerrainEditor()
-        return
-    end
-    if skinEditorOpen_ then
-        ToggleSkinEditor()
-        return
-    end
-
-    -- 否则切换编辑器选择菜单
-    editorMenuOpen_ = not editorMenuOpen_
-    if editorMenuPanel_ then
-        editorMenuPanel_:SetVisible(editorMenuOpen_)
-    end
-end
-
-function CreateEditorMenu()
-    editorMenuPanel_ = UI.Panel {
-        id = "editorMenu",
-        position = "absolute",
-        top = 0, left = 0, right = 0, bottom = 0,
-        backgroundColor = {0, 0, 0, 160},
-        justifyContent = "center",
-        alignItems = "center",
-        children = {
-            UI.Panel {
-                width = 260,
-                backgroundColor = {30, 35, 50, 240},
-                borderRadius = 12,
-                padding = 20,
-                gap = 12,
-                alignItems = "center",
-                children = {
-                    UI.Label { text = "编辑器", fontSize = 18, fontColor = {255, 255, 255, 255} },
-                    UI.Label { text = "选择要打开的编辑器 (Tab 关闭)", fontSize = 11, fontColor = {160, 160, 160, 255} },
-                    UI.Button {
-                        text = "🗺️ 地形编辑器", variant = "primary", width = "100%", height = 38,
-                        onClick = function()
-                            editorMenuOpen_ = false
-                            editorMenuPanel_:SetVisible(false)
-                            ToggleTerrainEditor()
-                        end
-                    },
-                    UI.Button {
-                        text = "🎨 皮肤编辑器", variant = "outline", width = "100%", height = 38,
-                        onClick = function()
-                            editorMenuOpen_ = false
-                            editorMenuPanel_:SetVisible(false)
-                            ToggleSkinEditor()
-                        end
-                    },
-                }
-            }
-        }
-    }
-    editorMenuPanel_:SetVisible(false)
-
-    local root = UI.FindById("root")
-    if root then
-        root:AddChild(editorMenuPanel_)
-    end
-end
-
-function CreateTerrainEditor()
-    terrainEditorPanel_ = UI.Panel {
-        id = "terrainEditor",
-        position = "absolute",
-        top = 50, left = 10,
-        width = 200,
-        backgroundColor = {20, 20, 30, 220},
-        borderRadius = 8,
-        padding = 10,
-        gap = 6,
-        children = {
-            UI.Label { text = "地形编辑器 (Tab 关闭)", fontSize = 13, fontColor = {100, 255, 180, 255} },
-            UI.Label { id = "te_hint", text = "点击选中平台\n拖拽移动 / 边缘拉伸", fontSize = 11, fontColor = {180, 180, 180, 255} },
-            UI.Label { id = "te_info", text = "", fontSize = 11, fontColor = {200, 200, 200, 255} },
-            UI.Button {
-                text = "复制配置", variant = "primary", height = 28,
-                onClick = function()
-                    local content = ExportTerrainConfig()
-                    ui.useSystemClipboard = true
-                    ui:SetClipboardText(content)
-                    ShowExportPopup(content)
-                end
-            },
-        }
-    }
-    terrainEditorPanel_:SetVisible(false)
-
-    local root = UI.FindById("root")
-    if root then
-        root:AddChild(terrainEditorPanel_)
-    end
-end
-
---- 导出地形配置为 JSON
-function ExportTerrainConfig()
-    local lines = {}
-    table.insert(lines, '{')
-    table.insert(lines, '  "ground": {')
-    local g = platforms_[1]
-    table.insert(lines, string.format('    "x": %.2f, "y": %.2f, "width": %.2f, "height": %.2f', g.x, g.y, g.width, g.height))
-    table.insert(lines, '  },')
-    table.insert(lines, '  "platforms": [')
-    for i = 2, #platforms_ do
-        local p = platforms_[i]
-        local comma = (i < #platforms_) and "," or ""
-        table.insert(lines, string.format('    { "x": %.2f, "y": %.2f, "width": %.2f, "height": %.2f }%s', p.x, p.y, p.width, p.height, comma))
-    end
-    table.insert(lines, '  ]')
-    table.insert(lines, '}')
-    return table.concat(lines, "\n")
-end
-
---- 更新选中平台信息显示
-function UpdateTerrainInfoLabel()
-    local lbl = UI.FindById("te_info")
-    if not lbl then return end
-    if terrainSelected_ then
-        local p = platforms_[terrainSelected_]
-        local name = terrainSelected_ == 1 and "地面" or ("平台 #" .. (terrainSelected_ - 1))
-        lbl:SetText(string.format("%s\nx=%.1f y=%.1f\nw=%.1f h=%.2f", name, p.x, p.y, p.width, p.height))
-    else
-        lbl:SetText("")
-    end
-end
-
---- 判断鼠标在平台的哪个区域（返回拖拽模式）
---- handleSize: 边缘手柄像素宽度
-function HitTestPlatform(platIdx, mx, my)
-    local p = platforms_[platIdx]
-    local ppu = GetPixelsPerUnit()
-    local sx, sy = PhysToScreen(p.x, p.y)
-    local halfW = p.width * ppu / 2
-    local halfH = p.height * ppu / 2
-
-    local handleSize = 10  -- 像素
-
-    -- 检查是否在平台矩形内（扩展手柄区域）
-    if mx < sx - halfW - handleSize or mx > sx + halfW + handleSize then return nil end
-    if my < sy - halfH - handleSize or my > sy + halfH + handleSize then return nil end
-
-    -- 上下左右边缘检测
-    if mx >= sx - halfW - handleSize and mx <= sx - halfW + handleSize then return "left" end
-    if mx >= sx + halfW - handleSize and mx <= sx + halfW + handleSize then return "right" end
-    if my >= sy - halfH - handleSize and my <= sy - halfH + handleSize then return "top" end
-    if my >= sy + halfH - handleSize and my <= sy + halfH + handleSize then return "bottom" end
-
-    -- 中心区域 → 移动
-    if mx >= sx - halfW and mx <= sx + halfW and my >= sy - halfH and my <= sy + halfH then
-        return "move"
-    end
-
-    return nil
-end
-
---- 同步编辑结果到物理世界节点
-function SyncPlatformToNode(platIdx)
-    local p = platforms_[platIdx]
-    if not p.node then return end
-    p.node:SetPosition2D(p.x, p.y)
-    local shape = p.node:GetComponent("CollisionBox2D")
-    if shape then
-        shape:SetSize(p.width, p.height)
-    end
-end
-
---- 地形编辑器主更新（鼠标交互）
-function UpdateTerrainEditor(dt)
-    local mx = input.mousePosition.x
-    local my = input.mousePosition.y
-    local mousePressed = input:GetMouseButtonPress(MOUSEB_LEFT)
-    local mouseDown = input:GetMouseButtonDown(MOUSEB_LEFT)
-
-    -- 鼠标按下：选中或开始拖拽
-    if mousePressed then
-        terrainMouseDown_ = true
-        local hit = false
-
-        -- 如果已有选中，优先检测当前选中平台的手柄
-        if terrainSelected_ then
-            local mode = HitTestPlatform(terrainSelected_, mx, my)
-            if mode then
-                terrainDragMode_ = mode
-                terrainDragStart_.sx = mx
-                terrainDragStart_.sy = my
-                local p = platforms_[terrainSelected_]
-                terrainDragOrigin_ = {x = p.x, y = p.y, width = p.width, height = p.height}
-                hit = true
-            end
-        end
-
-        -- 未命中当前选中 → 尝试选中其他平台
-        if not hit then
-            terrainSelected_ = nil
-            terrainDragMode_ = "none"
-            -- 从上到下遍历（后加的平台在前面更容易点到）
-            for i = #platforms_, 1, -1 do
-                local mode = HitTestPlatform(i, mx, my)
-                if mode then
-                    terrainSelected_ = i
-                    terrainDragMode_ = mode
-                    terrainDragStart_.sx = mx
-                    terrainDragStart_.sy = my
-                    local p = platforms_[i]
-                    terrainDragOrigin_ = {x = p.x, y = p.y, width = p.width, height = p.height}
-                    break
-                end
-            end
-            UpdateTerrainInfoLabel()
-        end
-    end
-
-    -- 拖拽中
-    if mouseDown and terrainMouseDown_ and terrainSelected_ and terrainDragMode_ ~= "none" then
-        local dx = mx - terrainDragStart_.sx
-        local dy = my - terrainDragStart_.sy
-        local ppu = GetPixelsPerUnit()
-        local worldDx = dx / ppu
-        local worldDy = -dy / ppu  -- 屏幕Y向下，物理Y向上
-
-        local p = platforms_[terrainSelected_]
-        local orig = terrainDragOrigin_
-
-        if terrainDragMode_ == "move" then
-            p.x = orig.x + worldDx
-            p.y = orig.y + worldDy
-        elseif terrainDragMode_ == "left" then
-            -- 左边缘向左拉 → 宽度增加，中心左移
-            local newWidth = math.max(0.5, orig.width - worldDx)
-            local widthDiff = newWidth - orig.width
-            p.width = newWidth
-            p.x = orig.x - widthDiff / 2
-        elseif terrainDragMode_ == "right" then
-            local newWidth = math.max(0.5, orig.width + worldDx)
-            local widthDiff = newWidth - orig.width
-            p.width = newWidth
-            p.x = orig.x + widthDiff / 2
-        elseif terrainDragMode_ == "top" then
-            -- 上边缘向上拉 → 高度增加，中心上移
-            local newHeight = math.max(0.2, orig.height + worldDy)
-            local heightDiff = newHeight - orig.height
-            p.height = newHeight
-            p.y = orig.y + heightDiff / 2
-        elseif terrainDragMode_ == "bottom" then
-            local newHeight = math.max(0.2, orig.height - worldDy)
-            local heightDiff = newHeight - orig.height
-            p.height = newHeight
-            p.y = orig.y - heightDiff / 2
-        end
-
-        SyncPlatformToNode(terrainSelected_)
-        UpdateTerrainInfoLabel()
-    end
-
-    -- 鼠标释放
-    if not mouseDown then
-        terrainMouseDown_ = false
-        terrainDragMode_ = "none"
-    end
-end
-
---- 绘制地形编辑器覆盖层
-function DrawTerrainEditor()
-    if not terrainEditorOpen_ then return end
-
-    local ppu = GetPixelsPerUnit()
-    local handleSize = 8
-
-    -- 遍历所有平台，绘制半透明轮廓
-    for i, plat in ipairs(platforms_) do
-        local sx, sy = PhysToScreen(plat.x, plat.y)
-        local pw = plat.width * ppu
-        local ph = plat.height * ppu
-
-        if i == terrainSelected_ then
-            -- 选中高亮：亮绿边框
-            nvgBeginPath(nvg_)
-            nvgRect(nvg_, sx - pw/2, sy - ph/2, pw, ph)
-            nvgFillColor(nvg_, nvgRGBA(100, 255, 180, 40))
-            nvgFill(nvg_)
-            nvgBeginPath(nvg_)
-            nvgRect(nvg_, sx - pw/2, sy - ph/2, pw, ph)
-            nvgStrokeColor(nvg_, nvgRGBA(100, 255, 180, 255))
-            nvgStrokeWidth(nvg_, 2)
-            nvgStroke(nvg_)
-
-            -- 四边手柄
-            local handles = {
-                {x = sx - pw/2, y = sy, mode = "left"},
-                {x = sx + pw/2, y = sy, mode = "right"},
-                {x = sx, y = sy - ph/2, mode = "top"},
-                {x = sx, y = sy + ph/2, mode = "bottom"},
-            }
-            for _, h in ipairs(handles) do
-                nvgBeginPath(nvg_)
-                nvgRect(nvg_, h.x - handleSize/2, h.y - handleSize/2, handleSize, handleSize)
-                local isActive = (terrainDragMode_ == h.mode)
-                if isActive then
-                    nvgFillColor(nvg_, nvgRGBA(255, 220, 80, 255))
-                else
-                    nvgFillColor(nvg_, nvgRGBA(255, 255, 255, 220))
-                end
-                nvgFill(nvg_)
-                nvgBeginPath(nvg_)
-                nvgRect(nvg_, h.x - handleSize/2, h.y - handleSize/2, handleSize, handleSize)
-                nvgStrokeColor(nvg_, nvgRGBA(0, 0, 0, 180))
-                nvgStrokeWidth(nvg_, 1)
-                nvgStroke(nvg_)
-            end
-
-            -- 尺寸标注
-            nvgFontSize(nvg_, 11)
-            nvgFontFace(nvg_, "sans")
-            nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
-            nvgFillColor(nvg_, nvgRGBA(100, 255, 180, 220))
-            local label = string.format("%.1f × %.2f", plat.width, plat.height)
-            nvgText(nvg_, sx, sy - ph/2 - 4, label, nil)
-        else
-            -- 非选中：白色虚线轮廓
-            nvgBeginPath(nvg_)
-            nvgRect(nvg_, sx - pw/2, sy - ph/2, pw, ph)
-            nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, 80))
-            nvgStrokeWidth(nvg_, 1)
-            nvgStroke(nvg_)
-        end
-    end
-
-    -- 顶部提示
-    nvgFontSize(nvg_, 14)
-    nvgFontFace(nvg_, "sans")
-    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
-    nvgFillColor(nvg_, nvgRGBA(100, 255, 180, 200))
-    nvgText(nvg_, screenW_ / 2, 6, "[ 地形编辑模式 - 游戏已暂停 | Tab 退出 ]", nil)
-end
-
-function Stop()
-    UI.Shutdown()
-    if nvg_ then nvgDelete(nvg_) end
-end
-
--- ============================================================================
 -- 场景
 -- ============================================================================
 function CreateScene()
@@ -998,7 +424,6 @@ function CreateScene()
     cameraNode_ = scene_:CreateChild("Camera")
     local camera = cameraNode_:CreateComponent("Camera")
     camera.orthographic = true
-    -- Contain策略: 确保19.2x10.8设计区域始终完整可见
     local ortho, camY = CalcContainOrthoSize()
     camera.orthoSize = ortho
     cameraNode_.position = Vector3(0, camY, -10)
@@ -1006,25 +431,18 @@ function CreateScene()
     renderer:SetViewport(0, Viewport:new(scene_, camera))
 end
 
---- 计算Contain策略下的orthoSize和相机Y位置
---- 设计区域19.2x10.8(16:9)始终完整可见
---- 屏幕更宽: 居中显示，两侧留空
---- 屏幕更高: 底部对齐屏幕底部，空余在上方
 function CalcContainOrthoSize()
     local sw = graphics:GetWidth()
     local sh = graphics:GetHeight()
     if sw <= 0 or sh <= 0 then return CONFIG.OrthoSize, 0 end
 
     local screenAspect = sw / sh
-    local designAspect = CONFIG.MapWidth / CONFIG.MapHeight  -- 16/9 ≈ 1.778
+    local designAspect = CONFIG.MapWidth / CONFIG.MapHeight
 
     if screenAspect >= designAspect then
-        -- 屏幕更宽(或刚好16:9): 高度适配，两侧留空，垂直居中
-        return CONFIG.MapHeight, 0  -- orthoSize=10.8, camY=0
+        return CONFIG.MapHeight, 0
     else
-        -- 屏幕更高: 宽度适配，底部对齐屏幕底部
         local ortho = CONFIG.MapWidth / screenAspect
-        -- 游戏区域底部=-5.4, 要贴屏幕底: camY - ortho/2 = -5.4
         local camY = ortho / 2 - CONFIG.MapHeight / 2
         return ortho, camY
     end
@@ -1034,7 +452,6 @@ end
 -- 创建世界(地面+平台)
 -- ============================================================================
 function CreateWorld()
-    -- 地面
     local groundHeight = 0.63
     local groundNode = scene_:CreateChild("Ground")
     groundNode:SetPosition2D(0, -5.09)
@@ -1047,19 +464,7 @@ function CreateWorld()
     groundShape.categoryBits = 1
     table.insert(platforms_, {x=0, y=-5.09, width=21.20, height=groundHeight, node=groundNode})
 
-    -- 平台（根据设计图 1920x1080 布局，视野 19.2x10.8）
-    -- 地面顶部 Y=-4.6，屏幕顶部 Y=+5.4
-    local platformData = {
-        {x = -5.93, y = -3.22, width = 2.60, height = 0.32},
-        {x = -3.93, y = -0.80, width = 2.40, height = 0.35},
-        {x = -0.96, y = -1.97, width = 2.40, height = 0.35},
-        {x =  0.79, y =  0.75, width = 2.80, height = 0.35},
-        {x =  3.45, y = -2.87, width = 2.80, height = 0.32},
-        {x =  4.40, y = -0.10, width = 1.92, height = 0.42},
-        {x =  6.61, y = -1.71, width = 3.00, height = 0.35},
-        {x =  4.01, y =  2.97, width = 1.51, height = 0.35},
-    }
-
+    local platformData = MAP_DATA[1].platforms
     for _, data in ipairs(platformData) do
         local node = scene_:CreateChild("Platform")
         node:SetPosition2D(data.x, data.y)
@@ -1075,7 +480,7 @@ function CreateWorld()
         table.insert(platforms_, data)
     end
 
-    -- 左右墙壁(防止掉出地图)
+    -- 左右墙壁
     local wallX = CONFIG.MapWidth / 2 + 0.8
     for _, wx in ipairs({-wallX, wallX}) do
         local wallNode = scene_:CreateChild("Wall")
@@ -1091,9 +496,18 @@ end
 -- ============================================================================
 -- 创建玩家
 -- ============================================================================
-function CreatePlayers()
-    for i, pdata in ipairs(PLAYERS) do
-        local node = scene_:CreateChild("Player" .. i)
+function CreatePlayers(activeIndices)
+    players_ = {}
+    local indicesToCreate = activeIndices or {}
+    if #indicesToCreate == 0 then
+        for i = 1, #PLAYERS do indicesToCreate[i] = i end
+    end
+
+    for seq, pi in ipairs(indicesToCreate) do
+        local pdata = PLAYERS[pi]
+        pdata.skinIndex = lobby_.slots[pi].skinIndex
+
+        local node = scene_:CreateChild("Player" .. pi)
         node:SetPosition2D(pdata.spawnX, CONFIG.GroundY + 2)
 
         local body = node:CreateComponent("RigidBody2D")
@@ -1102,13 +516,11 @@ function CreatePlayers()
         body.linearDamping = 0.0
         body.gravityScale = 1.0
 
-        -- 胶囊碰撞体（Box + 2 Circle 组合）
         local capR = capsuleRadius_ * playerScale_
         local capH = capsuleHeight_ * playerScale_
-        local boxH = capH - capR * 2  -- 矩形中间部分高度
+        local boxH = capH - capR * 2
         if boxH < 0.01 then boxH = 0.01 end
 
-        -- 中间矩形
         local bodyBox = node:CreateComponent("CollisionBox2D")
         bodyBox.size = Vector2(capR * 2, boxH)
         bodyBox.center = Vector2(0, 0)
@@ -1118,7 +530,6 @@ function CreatePlayers()
         bodyBox.categoryBits = 2
         bodyBox.maskBits = 0xFFFF
 
-        -- 上半圆
         local topCap = node:CreateComponent("CollisionCircle2D")
         topCap.radius = capR
         topCap.center = Vector2(0, boxH / 2)
@@ -1128,7 +539,6 @@ function CreatePlayers()
         topCap.categoryBits = 2
         topCap.maskBits = 0xFFFF
 
-        -- 下半圆
         local bottomCap = node:CreateComponent("CollisionCircle2D")
         bottomCap.radius = capR
         bottomCap.center = Vector2(0, -boxH / 2)
@@ -1138,7 +548,6 @@ function CreatePlayers()
         bottomCap.categoryBits = 2
         bottomCap.maskBits = 0xFFFF
 
-        -- 脚底传感器（胶囊底部）
         local footSensor = node:CreateComponent("CollisionCircle2D")
         footSensor.radius = capR * 0.6
         footSensor.center = Vector2(0, -(capH / 2) * 0.9)
@@ -1146,18 +555,19 @@ function CreatePlayers()
         footSensor.categoryBits = 4
         footSensor.maskBits = 1
 
-        players_[i] = {
+        players_[seq] = {
             node = node,
             body = body,
             onGround = false,
             groundContacts = 0,
             score = 0,
-            facing = 1,  -- 1=右, -1=左
+            facing = 1,
             config = pdata,
-            animTime = 0,    -- 动画计时器
-            isMoving = false, -- 是否在移动
-            velY = 0,        -- 纵向速度(用于跳跃动画)
-            jumping = false, -- 是否正在跳跃（用于可变跳跃高度）
+            originalIndex = pi,
+            animTime = 0,
+            isMoving = false,
+            velY = 0,
+            jumping = false,
         }
     end
 end
@@ -1166,25 +576,20 @@ end
 -- 队伍分配
 -- ============================================================================
 function AssignTeams()
-    -- 随机将玩家分配到两个队伍（每队人数尽量均等）
     local indices = {}
-    for i = 1, #PLAYERS do
-        indices[i] = i
-    end
-    -- Fisher-Yates 洗牌
+    for i = 1, #players_ do indices[i] = i end
     for i = #indices, 2, -1 do
         local j = math.random(1, i)
         indices[i], indices[j] = indices[j], indices[i]
     end
 
-    -- 前一半进队伍1，后一半进队伍2
     teams_[1].members = {}
     teams_[2].members = {}
     teams_[1].score = 0
     teams_[2].score = 0
     playerTeam_ = {}
 
-    local half = math.floor(#PLAYERS / 2)
+    local half = math.floor(#players_ / 2)
     for idx = 1, #indices do
         local pi = indices[idx]
         local teamIdx = (idx <= half) and 1 or 2
@@ -1192,11 +597,10 @@ function AssignTeams()
         table.insert(teams_[teamIdx].members, pi)
     end
 
-    -- 打印队伍分配结果
     for t = 1, 2 do
         local names = {}
         for _, pi in ipairs(teams_[t].members) do
-            table.insert(names, PLAYERS[pi].name)
+            table.insert(names, players_[pi].config.name)
         end
         print(string.format("[Teams] %s: %s", teams_[t].name, table.concat(names, ", ")))
     end
@@ -1213,98 +617,12 @@ function CreateUI()
         scale = UI.Scale.DEFAULT,
     })
 
-    -- 构建左队（队伍1）成员列表
-    local team1Children = {}
-    for _, pi in ipairs(teams_[1].members) do
-        local pdata = PLAYERS[pi]
-        table.insert(team1Children, UI.Panel {
-            flexDirection = "row", alignItems = "center", gap = 6,
-            children = {
-                -- 头像小圆点
-                UI.Panel { width = 14, height = 14, borderRadius = 7, backgroundColor = pdata.color },
-                UI.Label {
-                    id = "score" .. pi,
-                    text = tostring(0),
-                    fontSize = 16,
-                    fontColor = {255, 255, 255, 220},
-                },
-            }
-        })
-    end
-
-    -- 构建右队（队伍2）成员列表
-    local team2Children = {}
-    for _, pi in ipairs(teams_[2].members) do
-        local pdata = PLAYERS[pi]
-        table.insert(team2Children, UI.Panel {
-            flexDirection = "row", alignItems = "center", justifyContent = "flex-end", gap = 6,
-            children = {
-                UI.Label {
-                    id = "score" .. pi,
-                    text = tostring(0),
-                    fontSize = 16,
-                    fontColor = {255, 255, 255, 220},
-                },
-                UI.Panel { width = 14, height = 14, borderRadius = 7, backgroundColor = pdata.color },
-            }
-        })
-    end
-
-    -- 构建队伍1面板的 children（避免 table.unpack 陷阱）
-    local t1PanelChildren = {
-        UI.Label {
-            id = "team1Score",
-            text = "团队总分 0",
-            fontSize = 18,
-            fontColor = teams_[1].color,
-            fontWeight = "bold",
-        },
-    }
-    for _, child in ipairs(team1Children) do
-        table.insert(t1PanelChildren, child)
-    end
-
-    -- 构建队伍2面板的 children
-    local t2PanelChildren = {
-        UI.Label {
-            id = "team2Score",
-            text = "0 团队总分",
-            fontSize = 18,
-            fontColor = teams_[2].color,
-            fontWeight = "bold",
-        },
-    }
-    for _, child in ipairs(team2Children) do
-        table.insert(t2PanelChildren, child)
-    end
-
+    -- 初始化时只创建根节点，队伍 UI 在大厅结束后创建
     UI.SetRoot(UI.Panel {
         id = "root",
         width = "100%", height = "100%",
         pointerEvents = "box-none",
         children = {
-            -- 左上角：队伍1
-            UI.Panel {
-                id = "team1Panel",
-                position = "absolute",
-                top = 8, left = 10,
-                padding = 8,
-                gap = 4,
-                pointerEvents = "none",
-                children = t1PanelChildren,
-            },
-            -- 右上角：队伍2
-            UI.Panel {
-                id = "team2Panel",
-                position = "absolute",
-                top = 8, right = 10,
-                padding = 8,
-                gap = 4,
-                alignItems = "flex-end",
-                pointerEvents = "none",
-                children = t2PanelChildren,
-            },
-            -- 底部操作提示
             UI.Label {
                 position = "absolute",
                 bottom = 10, left = 0, right = 0,
@@ -1317,8 +635,74 @@ function CreateUI()
     })
 end
 
+--- 大厅结束后创建队伍 UI
+function CreateTeamUI()
+    local root = UI.FindById("root")
+    if not root then return end
+
+    -- 构建左队成员
+    local t1PanelChildren = {
+        UI.Label {
+            id = "team1Score",
+            text = "团队总分 0",
+            fontSize = 18,
+            fontColor = teams_[1].color,
+            fontWeight = "bold",
+        },
+    }
+    for _, pi in ipairs(teams_[1].members) do
+        local pdata = PLAYERS[pi]
+        table.insert(t1PanelChildren, UI.Panel {
+            flexDirection = "row", alignItems = "center", gap = 6,
+            children = {
+                UI.Panel { width = 14, height = 14, borderRadius = 7, backgroundColor = pdata.color },
+                UI.Label { id = "score" .. pi, text = "0", fontSize = 16, fontColor = {255, 255, 255, 220} },
+            }
+        })
+    end
+
+    -- 构建右队成员
+    local t2PanelChildren = {
+        UI.Label {
+            id = "team2Score",
+            text = "0 团队总分",
+            fontSize = 18,
+            fontColor = teams_[2].color,
+            fontWeight = "bold",
+        },
+    }
+    for _, pi in ipairs(teams_[2].members) do
+        local pdata = PLAYERS[pi]
+        table.insert(t2PanelChildren, UI.Panel {
+            flexDirection = "row", alignItems = "center", justifyContent = "flex-end", gap = 6,
+            children = {
+                UI.Label { id = "score" .. pi, text = "0", fontSize = 16, fontColor = {255, 255, 255, 220} },
+                UI.Panel { width = 14, height = 14, borderRadius = 7, backgroundColor = pdata.color },
+            }
+        })
+    end
+
+    root:AddChild(UI.Panel {
+        id = "team1Panel",
+        position = "absolute",
+        top = 8, left = 10,
+        padding = 8, gap = 4,
+        pointerEvents = "none",
+        children = t1PanelChildren,
+    })
+    root:AddChild(UI.Panel {
+        id = "team2Panel",
+        position = "absolute",
+        top = 8, right = 10,
+        padding = 8, gap = 4,
+        alignItems = "flex-end",
+        pointerEvents = "none",
+        children = t2PanelChildren,
+    })
+end
+
 -- ============================================================================
--- 物理碰撞检测(地面检测)
+-- 物理碰撞检测
 -- ============================================================================
 local function GetPlayerIndex(node)
     for i, p in ipairs(players_) do
@@ -1330,13 +714,12 @@ end
 local function IsGround(node)
     if node == nil then return false end
     local name = node.name
-    return name == "Ground" or name == "Platform" or name == "Wall"
+    return name == "Ground" or name == "Platform"
 end
 
 function HandleBeginContact(eventType, eventData)
     local nodeA = eventData["NodeA"]:GetPtr("Node")
     local nodeB = eventData["NodeB"]:GetPtr("Node")
-
     local pi = GetPlayerIndex(nodeA) or GetPlayerIndex(nodeB)
     if pi then
         local otherNode = GetPlayerIndex(nodeA) and nodeB or nodeA
@@ -1350,7 +733,6 @@ end
 function HandleEndContact(eventType, eventData)
     local nodeA = eventData["NodeA"]:GetPtr("Node")
     local nodeB = eventData["NodeB"]:GetPtr("Node")
-
     local pi = GetPlayerIndex(nodeA) or GetPlayerIndex(nodeB)
     if pi then
         local otherNode = GetPlayerIndex(nodeA) and nodeB or nodeA
@@ -1364,12 +746,10 @@ function HandleEndContact(eventType, eventData)
     end
 end
 
---- 单向平台: 允许玩家从下方跳跃穿过平台
 function HandleUpdateContact(eventType, eventData)
     local nodeA = eventData["NodeA"]:GetPtr("Node")
     local nodeB = eventData["NodeB"]:GetPtr("Node")
 
-    -- 判断哪个是单向平台
     local platformNode, playerNode
     if nodeA:HasTag("one_way_platform") then
         platformNode, playerNode = nodeA, nodeB
@@ -1379,22 +759,17 @@ function HandleUpdateContact(eventType, eventData)
         return
     end
 
-    -- 确认另一个是玩家
     local pi = GetPlayerIndex(playerNode)
     if not pi then return end
 
-    -- 获取平台顶部 Y 坐标
     local platPos = platformNode.position2D
     local platShape = platformNode:GetComponent("CollisionBox2D")
     local platHalfH = platShape:GetSize().y / 2
     local platTopY = platPos.y + platHalfH
 
-    -- 获取玩家底部 Y 坐标（胶囊底部）
     local playerPos = playerNode.position2D
     local playerBottomY = playerPos.y - (capsuleHeight_ * playerScale_) / 2
 
-    -- 如果玩家底部在平台顶部以下，禁用此接触（允许穿过）
-    -- 给一小段容差（0.05米），防止站在平台上时闪烁
     if playerBottomY < platTopY - 0.05 then
         eventData["Enabled"] = Variant(false)
     end
@@ -1410,7 +785,7 @@ function HandleUpdate(eventType, eventData)
     screenW_ = graphics:GetWidth()
     screenH_ = graphics:GetHeight()
 
-    -- 正常模式下：使用Contain策略保持设计区域完整可见
+    -- Contain 策略
     if not cameraZoomed_ then
         local camera = cameraNode_:GetComponent("Camera")
         local ortho, camY = CalcContainOrthoSize()
@@ -1420,51 +795,133 @@ function HandleUpdate(eventType, eventData)
 
     -- Tab 切换编辑器
     if input:GetKeyPress(KEY_TAB) then
-        ToggleEditorMenu()
+        Editors.ToggleEditorMenu()
     end
 
-    -- 编辑器激活时，暂停游戏
-    if editorMenuOpen_ then
+    -- 编辑器激活时暂停游戏
+    if Editors.editorMenuOpen then
         return
     end
-    if terrainEditorOpen_ then
-        UpdateTerrainEditor(dt)
+    if Editors.terrainEditorOpen then
+        Editors.UpdateTerrainEditor(dt)
         return
     end
-    if skinEditorOpen_ then
-        skinEditorAnimTime_ = skinEditorAnimTime_ + dt * 4.0  -- 预览动画循环
+    if Editors.skinEditorOpen then
+        Editors.skinEditorAnimTime = Editors.skinEditorAnimTime + dt * 4.0
+        return
+    end
+
+    -- 大厅逻辑
+    if gameState_ == "lobby" then
+        UpdateLobby(dt)
         return
     end
 
     if gameOver_ then
-        -- R 键重启
         if input:GetKeyPress(KEY_R) then
             RestartGame()
         end
         return
     end
 
-    -- 只有 countdown 阶段玩家可以移动
-    if gameState_ == "countdown" then
+    -- prep 和 countdown 阶段玩家可移动
+    if gameState_ == "prep" or gameState_ == "countdown" then
         UpdatePlayers(dt)
+        Gameplay.UpdateCoinCollection(players_, unlock_.currentGameplayIndex)
     end
 
-    -- 公告板阶段处理确认输入
+    -- 公告板确认
     if gameState_ == "bulletin" and bulletin_.animPhase == "stay" then
         UpdateBulletinConfirm()
     end
 
-    -- 更新游戏状态机
     UpdateGameState(dt)
 end
 
+-- ============================================================================
+-- 大厅逻辑
+-- ============================================================================
+function UpdateLobby(dt)
+    lobby_.animTime = lobby_.animTime + dt * 4.0
+
+    -- 按跳跃键加入/准备
+    for i, slot in ipairs(lobby_.slots) do
+        local keys = PLAYERS[i].keys
+        if input:GetKeyPress(keys.jump) then
+            if not slot.joined then
+                slot.joined = true
+                print(PLAYERS[i].name .. " 加入游戏")
+            elseif not slot.ready then
+                slot.ready = true
+                print(PLAYERS[i].name .. " 准备就绪")
+            end
+        end
+        -- 左右键切换皮肤
+        if slot.joined and not slot.ready then
+            if input:GetKeyPress(keys.left) then
+                slot.skinIndex = slot.skinIndex - 1
+                if slot.skinIndex < 1 then slot.skinIndex = #skinsRuntime_ end
+            elseif input:GetKeyPress(keys.right) then
+                slot.skinIndex = slot.skinIndex + 1
+                if slot.skinIndex > #skinsRuntime_ then slot.skinIndex = 1 end
+            end
+        end
+    end
+
+    -- 检查是否所有加入的玩家都准备就绪（至少2人）
+    local joinedCount = 0
+    local allReady = true
+    for _, slot in ipairs(lobby_.slots) do
+        if slot.joined then
+            joinedCount = joinedCount + 1
+            if not slot.ready then allReady = false end
+        end
+    end
+
+    if joinedCount >= 2 and allReady then
+        StartGameFromLobby()
+    end
+end
+
+function StartGameFromLobby()
+    -- 收集已加入的玩家索引
+    local activeIndices = {}
+    for i, slot in ipairs(lobby_.slots) do
+        if slot.joined then
+            table.insert(activeIndices, i)
+        end
+    end
+
+    CreatePlayers(activeIndices)
+    AssignTeams()
+    CreateTeamUI()
+
+    -- 进入第一个公告板
+    bulletin_.round = 1
+    bulletin_.confirmed = {}
+    for i = 1, #players_ do
+        bulletin_.confirmed[i] = false
+    end
+    bulletin_.animPhase = "enter"
+    bulletin_.animTimer = 0
+    gameState_ = "bulletin"
+
+    -- 选择第一轮玩法
+    unlock_.currentGameplayIndex = 1
+    CheckUnlockAndPrepareRound()
+
+    print("=== 游戏开始! ===")
+end
+
+-- ============================================================================
+-- 玩家更新
+-- ============================================================================
 function UpdatePlayers(dt)
     for i, p in ipairs(players_) do
         local keys = p.config.keys
         local vel = p.body.linearVelocity
         local desiredVelX = 0
 
-        -- 左右移动
         if input:GetKeyDown(keys.left) then
             desiredVelX = -CONFIG.PlayerSpeed
             p.facing = -1
@@ -1480,8 +937,9 @@ function UpdatePlayers(dt)
             p.body.linearVelocity = Vector2(desiredVelX, CONFIG.PlayerJumpSpeed)
             p.body.awake = true
             p.jumping = true
-        elseif p.jumping and not p.onGround then
-            -- 松开跳跃键时截断上升速度（实现短按低跳、长按高跳）
+            p.onGround = false
+            p.groundContacts = 0
+        elseif p.jumping then
             if not input:GetKeyDown(keys.jump) then
                 local vy = p.body.linearVelocity.y
                 if vy > 0 then
@@ -1489,25 +947,25 @@ function UpdatePlayers(dt)
                 end
                 p.jumping = false
             elseif p.body.linearVelocity.y <= 0 then
-                -- 已经开始下落，结束跳跃状态
                 p.jumping = false
             end
-        elseif p.onGround then
-            -- 落地重置（不在起跳帧触发，因为起跳走第一个分支）
+        elseif p.onGround and p.body.linearVelocity.y <= 0 then
             p.jumping = false
         end
 
-        -- 更新动画状态
         p.isMoving = math.abs(desiredVelX) > 0.1
         p.velY = p.body.linearVelocity.y
         if p.isMoving then
-            p.animTime = p.animTime + dt * 10  -- 走路动画速度
+            p.animTime = p.animTime + dt * 10
         else
             p.animTime = 0
         end
     end
 end
 
+-- ============================================================================
+-- 游戏状态机
+-- ============================================================================
 function UpdateBulletinConfirm()
     for i, p in ipairs(players_) do
         if not bulletin_.confirmed[i] then
@@ -1518,9 +976,8 @@ function UpdateBulletinConfirm()
         end
     end
 
-    -- 检查是否全员确认
     local allConfirmed = true
-    for i = 1, #PLAYERS do
+    for i = 1, #players_ do
         if not bulletin_.confirmed[i] then
             allConfirmed = false
             break
@@ -1528,7 +985,6 @@ function UpdateBulletinConfirm()
     end
 
     if allConfirmed then
-        -- 全员确认，开始收起动画
         bulletin_.animPhase = "exit"
         bulletin_.animTimer = 0
     end
@@ -1539,26 +995,45 @@ function UpdateGameState(dt)
         bulletin_.animTimer = bulletin_.animTimer + dt
 
         if bulletin_.animPhase == "enter" then
-            -- 弹入动画播放完毕 → 进入等待确认
             if bulletin_.animTimer >= bulletin_.enterDuration then
                 bulletin_.animPhase = "stay"
                 bulletin_.animTimer = 0
             end
         elseif bulletin_.animPhase == "exit" then
-            -- 收起动画播放完毕 → 进入游戏
             if bulletin_.animTimer >= bulletin_.exitDuration then
-                -- 公告板结束，开始本关游戏
-                -- 重置所有玩家到初始位置，恢复物理
-                for _, p in ipairs(players_) do
+                local gp = GAMEPLAY_DATA[unlock_.currentGameplayIndex]
+                for i, p in ipairs(players_) do
                     p.body.bodyType = BT_DYNAMIC
-                    p.node:SetPosition2D(p.config.spawnX, CONFIG.GroundY + 2)
-                    p.body.linearVelocity = Vector2(0, 0)
                     p.body.awake = true
                 end
-                SpawnPhotoZone()
-                gameState_ = "countdown"
-                countdown_ = CONFIG.CountdownTime
+
+                if gp.resetPosition then
+                    local mapData = MAP_DATA[unlock_.currentMapLevel]
+                    for i, p in ipairs(players_) do
+                        local spawn = mapData and mapData.spawnPoints[i]
+                        if spawn then
+                            p.node:SetPosition2D(spawn.x, spawn.y)
+                        else
+                            p.node:SetPosition2D(p.config.spawnX, CONFIG.GroundY + 2)
+                        end
+                        p.body.linearVelocity = Vector2(0, 0)
+                    end
+                end
+
+                -- 通知 gameplay 模块准备阶段开始
+                Gameplay.OnPrepStart(unlock_.currentGameplayIndex, unlock_.currentMapLevel)
+                gameState_ = "prep"
+                prepTimer_ = gp.prepTime
             end
+        end
+
+    elseif gameState_ == "prep" then
+        prepTimer_ = prepTimer_ - dt
+        if prepTimer_ <= 0 then
+            SpawnPhotoZone()
+            local gp = GAMEPLAY_DATA[unlock_.currentGameplayIndex]
+            gameState_ = "countdown"
+            countdown_ = gp.rushTime
         end
 
     elseif gameState_ == "countdown" then
@@ -1566,21 +1041,21 @@ function UpdateGameState(dt)
         if countdown_ <= 0 then
             TakePhoto()
             gameState_ = "flash"
-            flashTimer_ = 0.3  -- 短暂白色闪光
+            flashTimer_ = 0.3
         end
 
     elseif gameState_ == "flash" then
         flashTimer_ = flashTimer_ - dt
         if flashTimer_ <= 0 then
             gameState_ = "showPhoto"
-            showPhotoTimer_ = 2.5  -- 展示照片2.5秒
+            showPhotoTimer_ = 2.5
         end
 
     elseif gameState_ == "showPhoto" then
         showPhotoTimer_ = showPhotoTimer_ - dt
         if showPhotoTimer_ <= 0 then
             photoZone_.active = false
-            -- 进入下一关公告板
+            Gameplay.OnRoundEnd()
             StartNextBulletin()
         end
     end
@@ -1589,27 +1064,25 @@ end
 function StartNextBulletin()
     bulletin_.round = bulletin_.round + 1
     bulletin_.confirmed = {}
-    for i = 1, #PLAYERS do
+    for i = 1, #players_ do
         bulletin_.confirmed[i] = false
     end
     bulletin_.animPhase = "enter"
     bulletin_.animTimer = 0
     gameState_ = "bulletin"
+    CheckUnlockAndPrepareRound()
 end
 
 -- ============================================================================
 -- 拍照逻辑
 -- ============================================================================
 function SpawnPhotoZone()
-    -- 收集未使用的预设索引
     local available = {}
     for i = 1, #PHOTO_PRESETS do
         if not usedPresets_[i] then
             available[#available + 1] = i
         end
     end
-
-    -- 全部用完则重置
     if #available == 0 then
         usedPresets_ = {}
         for i = 1, #PHOTO_PRESETS do
@@ -1617,7 +1090,6 @@ function SpawnPhotoZone()
         end
     end
 
-    -- 等权重随机选取
     local pick = available[math.random(#available)]
     usedPresets_[pick] = true
 
@@ -1625,13 +1097,13 @@ function SpawnPhotoZone()
     photoZone_.x = preset.x
     photoZone_.y = preset.y
     photoZone_.active = true
-
     print(string.format("拍照区域出现: %s (%.1f, %.1f)", preset.name, preset.x, preset.y))
 end
 
 function TakePhoto()
     roundResult_ = {}
     photoSnapshot_ = {}
+    local playersInZone = {}
 
     -- 播放快门音效
     if shutterSound_ then
@@ -1643,34 +1115,28 @@ function TakePhoto()
 
     for i, p in ipairs(players_) do
         local pos = p.node.position2D
-        -- 记录快照(用于展示照片)
         photoSnapshot_[i] = {
-            x = pos.x,
-            y = pos.y,
+            x = pos.x, y = pos.y,
             facing = p.facing,
             onGround = p.onGround,
             isMoving = p.isMoving,
             animTime = p.animTime,
         }
 
-        -- 检查玩家视觉胶囊体是否与拍照区域矩形相交（包括完全在内部的情况）
-        -- 使用视觉半径(CONFIG.PlayerRadius)而非物理碰撞半径，确保"看到入镜=判定入镜"
+        -- 胶囊体与矩形区域相交检测
         local capR = CONFIG.PlayerRadius * playerScale_
         local capH = capsuleHeight_ * playerScale_ * (CONFIG.PlayerRadius / capsuleRadius_)
         local boxH = capH - capR * 2
         if boxH < 0 then boxH = 0 end
 
-        -- 胶囊中轴线段: 从 (pos.x, pos.y - boxH/2) 到 (pos.x, pos.y + boxH/2)
         local segBottom = pos.y - boxH / 2
         local segTop = pos.y + boxH / 2
 
-        -- 拍照区域矩形边界
         local rectLeft = photoZone_.x - photoZone_.width / 2
         local rectRight = photoZone_.x + photoZone_.width / 2
         local rectBottom = photoZone_.y - photoZone_.height / 2
         local rectTop = photoZone_.y + photoZone_.height / 2
 
-        -- 计算胶囊中轴线段到矩形的最短距离
         local dx = math.max(0, rectLeft - pos.x, pos.x - rectRight)
         local dy = 0
         if segTop < rectBottom then
@@ -1680,53 +1146,49 @@ function TakePhoto()
         end
 
         local inZone = (dx * dx + dy * dy) <= capR * capR
-
         if inZone then
-            p.score = p.score + CONFIG.ScorePerPhoto
-            -- 加到团队总分
-            local teamIdx = playerTeam_[i]
-            if teamIdx then
-                teams_[teamIdx].score = teams_[teamIdx].score + CONFIG.ScorePerPhoto
-            end
-            table.insert(roundResult_, i)
-            print(p.config.name .. " 入镜得分! 个人: " .. p.score .. " 团队: " .. (teamIdx and teams_[teamIdx].score or 0))
-
-            -- 检查团队胜利
-            if teamIdx and teams_[teamIdx].score >= CONFIG.WinScore then
-                gameOver_ = true
-                winner_ = teams_[teamIdx].name
-                print("=== " .. winner_ .. " 获胜! ===")
-            end
+            table.insert(playersInZone, i)
         end
     end
 
-    -- 冻结所有玩家（设为静态刚体，完全停止物理模拟）
+    -- 使用 Gameplay 模块计算得分
+    local scorers = Gameplay.CalculateScorers(playersInZone, unlock_.currentGameplayIndex)
+
+    for _, idx in ipairs(scorers) do
+        local p = players_[idx]
+        p.score = p.score + CONFIG.ScorePerPhoto
+        local teamIdx = playerTeam_[idx]
+        if teamIdx then
+            teams_[teamIdx].score = teams_[teamIdx].score + CONFIG.ScorePerPhoto
+        end
+        table.insert(roundResult_, idx)
+        print(p.config.name .. " 得分! 个人: " .. p.score .. " 团队: " .. (teamIdx and teams_[teamIdx].score or 0))
+
+        if teamIdx and teams_[teamIdx].score >= GetWinScore() then
+            gameOver_ = true
+            winner_ = teams_[teamIdx].name
+            print("=== " .. winner_ .. " 获胜! ===")
+        end
+    end
+
+    -- 冻结玩家
     for _, p in ipairs(players_) do
         p.body.linearVelocity = Vector2(0, 0)
         p.body.bodyType = BT_STATIC
     end
 
-    -- 更新UI分数
     UpdateScoreUI()
 end
-
 
 function UpdateScoreUI()
     for i, p in ipairs(players_) do
         local label = UI.FindById("score" .. i)
-        if label then
-            label:SetText(tostring(p.score))
-        end
+        if label then label:SetText(tostring(p.score)) end
     end
-    -- 更新团队总分
     local t1Label = UI.FindById("team1Score")
-    if t1Label then
-        t1Label:SetText("团队总分 " .. teams_[1].score)
-    end
+    if t1Label then t1Label:SetText("团队总分 " .. teams_[1].score) end
     local t2Label = UI.FindById("team2Score")
-    if t2Label then
-        t2Label:SetText(teams_[2].score .. " 团队总分")
-    end
+    if t2Label then t2Label:SetText(teams_[2].score .. " 团队总分") end
 end
 
 function RestartGame()
@@ -1734,22 +1196,31 @@ function RestartGame()
     winner_ = ""
     photoZone_.active = false
     roundResult_ = {}
-    usedPresets_ = {}  -- 重置预设位置池
+    usedPresets_ = {}
 
     for i, p in ipairs(players_) do
-        p.score = 0
-        p.node:SetPosition2D(p.config.spawnX, CONFIG.GroundY + 2)
-        p.body.linearVelocity = Vector2(0, 0)
+        if p.node then p.node:Remove() end
     end
+    players_ = {}
 
-    -- 重新随机分队
-    AssignTeams()
-    UpdateScoreUI()
+    unlock_.currentMapLevel = 1
+    unlock_.currentGameplayIndex = 1
+    Gameplay.ClearCoins()
+    SwitchMap(1)
 
-    -- 重置公告板，从第 1 关开始
-    bulletin_.round = 0  -- StartNextBulletin 会 +1
-    StartNextBulletin()
-    print("=== 游戏重新开始 ===")
+    -- 移除队伍 UI
+    local t1Panel = UI.FindById("team1Panel")
+    if t1Panel then t1Panel:Remove() end
+    local t2Panel = UI.FindById("team2Panel")
+    if t2Panel then t2Panel:Remove() end
+
+    for i = 1, #PLAYERS do
+        lobby_.slots[i].joined = false
+        lobby_.slots[i].ready = false
+    end
+    lobby_.xButtonRects = {}
+    gameState_ = "lobby"
+    print("=== 返回大厅 ===")
 end
 
 -- ============================================================================
@@ -1758,1035 +1229,177 @@ end
 function HandleNanoVGRender(eventType, eventData)
     if nvg_ == nil then return end
 
+    -- 同步状态到 G 对象（每帧更新）
+    SyncGameState()
+
     nvgBeginFrame(nvg_, screenW_, screenH_, 1.0)
 
-    DrawBackground()
-    DrawPlatforms()
-    DrawPhotoZone()
-    DrawPlayers()
-    DrawCountdown()
-    DrawFlashEffect()
-    DrawShowPhoto()
-    DrawBulletin()
-    DrawGameOver()
-    DrawTerrainEditor()
-    DrawSkinEditorPreview()
+    if gameState_ == "lobby" then
+        DrawLobby()
+    else
+        Render.DrawBackground()
+        Render.DrawPlatforms()
+        Render.DrawCoins(Gameplay.GetCoins(), unlock_.currentGameplayIndex)
+        Render.DrawPhotoZone()
+        Render.DrawPlayers()
+        Render.DrawPlayerCoinCount(Gameplay.GetPlayerCoins(), unlock_.currentGameplayIndex)
+        Render.DrawPrepIndicator()
+        Render.DrawCountdown()
+        Render.DrawFlashEffect()
+        Render.DrawShowPhoto()
+        Render.DrawBulletin()
+        Render.DrawGameOver()
+    end
+
+    Editors.DrawTerrainEditor()
+    Render.DrawSkinEditorPreview()
 
     nvgEndFrame(nvg_)
 end
 
--- 当前每单位像素数（根据相机 orthoSize 动态计算）
-function GetPixelsPerUnit()
-    local camera = cameraNode_:GetComponent("Camera")
-    return screenH_ / camera.orthoSize
-end
-
--- 物理坐标转屏幕坐标（相机感知）
-function PhysToScreen(px, py)
-    local camera = cameraNode_:GetComponent("Camera")
-    local orthoSize = camera.orthoSize
-    local camX = cameraNode_.position.x
-    local camY = cameraNode_.position.y
-    local ppu = screenH_ / orthoSize
-
-    local sx = screenW_ / 2 + (px - camX) * ppu
-    local sy = screenH_ / 2 - (py - camY) * ppu
-    return sx, sy
-end
-
-function DrawBackground()
-    -- 天空渐变（浅蓝到白）
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, 0, 0, screenW_, screenH_)
-    local skyGrad = nvgLinearGradient(nvg_, 0, 0, 0, screenH_,
-        nvgRGBA(100, 180, 255, 255), nvgRGBA(200, 230, 255, 255))
-    nvgFillPaint(nvg_, skyGrad)
-    nvgFill(nvg_)
-
-    -- 太阳
-    local sunX = screenW_ * 0.82
-    local sunY = screenH_ * 0.12
-    nvgBeginPath(nvg_)
-    nvgCircle(nvg_, sunX, sunY, 40)
-    local sunGrad = nvgRadialGradient(nvg_, sunX, sunY, 10, 40,
-        nvgRGBA(255, 250, 200, 255), nvgRGBA(255, 200, 80, 200))
-    nvgFillPaint(nvg_, sunGrad)
-    nvgFill(nvg_)
-    -- 太阳光晕
-    nvgBeginPath(nvg_)
-    nvgCircle(nvg_, sunX, sunY, 55)
-    local haloGrad = nvgRadialGradient(nvg_, sunX, sunY, 35, 55,
-        nvgRGBA(255, 240, 150, 60), nvgRGBA(255, 240, 150, 0))
-    nvgFillPaint(nvg_, haloGrad)
-    nvgFill(nvg_)
-
-    -- 云朵
-    math.randomseed(42)
-    for i = 1, 5 do
-        local cx = math.random(50, math.floor(screenW_ - 50))
-        local cy = math.random(30, math.floor(screenH_ * 0.25))
-        local cloudW = math.random(60, 120)
-        DrawCloud(cx, cy, cloudW)
-    end
-    math.randomseed(os.time())
-
-    -- 远山（深绿）
-    DrawMountain(screenH_ * 0.45, nvgRGBA(60, 120, 80, 255), 123)
-    -- 近山（浅绿）
-    DrawMountain(screenH_ * 0.55, nvgRGBA(80, 160, 90, 255), 456)
-
-    -- 草地（地面以下区域填充绿色）
-    local _, groundScreenY = PhysToScreen(0, CONFIG.GroundY)
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, 0, groundScreenY - 10, screenW_, screenH_ - groundScreenY + 10)
-    local grassGrad = nvgLinearGradient(nvg_, 0, groundScreenY, 0, screenH_,
-        nvgRGBA(80, 180, 60, 255), nvgRGBA(50, 120, 40, 255))
-    nvgFillPaint(nvg_, grassGrad)
-    nvgFill(nvg_)
-
-    -- 草地顶部草丛装饰
-    math.randomseed(99)
-    for i = 1, 40 do
-        local gx = math.random(0, math.floor(screenW_))
-        local gh = math.random(4, 12)
-        nvgBeginPath(nvg_)
-        nvgMoveTo(nvg_, gx, groundScreenY - 10)
-        nvgLineTo(nvg_, gx - 2, groundScreenY - 10 - gh)
-        nvgLineTo(nvg_, gx + 2, groundScreenY - 10 - gh * 0.7)
-        nvgClosePath(nvg_)
-        nvgFillColor(nvg_, nvgRGBA(60, 160 + math.random(0, 40), 50, 200))
-        nvgFill(nvg_)
-    end
-    math.randomseed(os.time())
-
-    -- 远处的小树
-    math.randomseed(77)
-    for i = 1, 6 do
-        local tx = math.random(30, math.floor(screenW_ - 30))
-        local ty = groundScreenY - 10
-        DrawTree(tx, ty, math.random(25, 45))
-    end
-    math.randomseed(os.time())
-end
-
--- 绘制云朵
-function DrawCloud(cx, cy, w)
-    local h = w * 0.4
-    nvgBeginPath(nvg_)
-    nvgEllipse(nvg_, cx, cy, w * 0.5, h * 0.4)
-    nvgEllipse(nvg_, cx - w * 0.25, cy + 3, w * 0.3, h * 0.35)
-    nvgEllipse(nvg_, cx + w * 0.25, cy + 2, w * 0.35, h * 0.35)
-    nvgFillColor(nvg_, nvgRGBA(255, 255, 255, 220))
-    nvgFill(nvg_)
-end
-
--- 绘制山脉
-function DrawMountain(baseY, color, seed)
-    math.randomseed(seed)
-    nvgBeginPath(nvg_)
-    nvgMoveTo(nvg_, 0, baseY + 40)
-    local step = 60
-    for x = 0, screenW_ + step, step do
-        local peakY = baseY - math.random(20, 80)
-        nvgLineTo(nvg_, x, peakY)
-    end
-    nvgLineTo(nvg_, screenW_, screenH_)
-    nvgLineTo(nvg_, 0, screenH_)
-    nvgClosePath(nvg_)
-    nvgFillColor(nvg_, color)
-    nvgFill(nvg_)
-    math.randomseed(os.time())
-end
-
--- 绘制小树
-function DrawTree(x, y, height)
-    -- 树干
-    local trunkW = height * 0.12
-    local trunkH = height * 0.35
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, x - trunkW / 2, y - trunkH, trunkW, trunkH)
-    nvgFillColor(nvg_, nvgRGBA(100, 70, 40, 200))
-    nvgFill(nvg_)
-    -- 树冠
-    nvgBeginPath(nvg_)
-    nvgEllipse(nvg_, x, y - trunkH - height * 0.3, height * 0.3, height * 0.35)
-    nvgFillColor(nvg_, nvgRGBA(40, 140 + math.random(0, 30), 50, 220))
-    nvgFill(nvg_)
-end
-
-function DrawPlatforms()
-    local ppu = GetPixelsPerUnit()
-    for _, plat in ipairs(platforms_) do
-        local sx, sy = PhysToScreen(plat.x, plat.y)
-        local pw = plat.width * ppu
-        local ph = plat.height * ppu
-
-        -- 土质平台外观
-        nvgBeginPath(nvg_)
-        nvgRoundedRect(nvg_, sx - pw/2, sy - ph/2, pw, ph, 6)
-        local grad = nvgLinearGradient(nvg_, sx - pw/2, sy - ph/2, sx - pw/2, sy + ph/2,
-            nvgRGBA(140, 100, 60, 255), nvgRGBA(100, 70, 40, 255))
-        nvgFillPaint(nvg_, grad)
-        nvgFill(nvg_)
-
-        -- 顶部草皮
-        nvgBeginPath(nvg_)
-        nvgRoundedRect(nvg_, sx - pw/2, sy - ph/2 - 3, pw, 6, 3)
-        nvgFillColor(nvg_, nvgRGBA(80, 180, 50, 255))
-        nvgFill(nvg_)
-
-        -- 草皮上的小草
-        local grassCount = math.floor(pw / 12)
-        for g = 1, grassCount do
-            local gx = sx - pw/2 + g * (pw / (grassCount + 1))
-            nvgBeginPath(nvg_)
-            nvgMoveTo(nvg_, gx, sy - ph/2 - 3)
-            nvgLineTo(nvg_, gx - 1.5, sy - ph/2 - 8)
-            nvgLineTo(nvg_, gx + 1.5, sy - ph/2 - 6)
-            nvgClosePath(nvg_)
-            nvgFillColor(nvg_, nvgRGBA(60, 160, 40, 200))
-            nvgFill(nvg_)
-        end
-    end
-end
-
-function DrawPhotoZone()
-    if not photoZone_.active then return end
-    if gameState_ == "showPhoto" then return end  -- 展示照片时不绘制标记
-
-    local ppu = GetPixelsPerUnit()
-    local sx, sy = PhysToScreen(photoZone_.x, photoZone_.y)
-    local pw = photoZone_.width * ppu
-    local ph = photoZone_.height * ppu
-
-    -- 闪烁效果
-    local alpha = 120 + math.floor(math.sin(os.clock() * 4) * 40)
-
-    -- 填充(半透明黄色)
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, sx - pw/2, sy - ph/2, pw, ph)
-    nvgFillColor(nvg_, nvgRGBA(255, 220, 50, math.floor(alpha * 0.3)))
-    nvgFill(nvg_)
-
-    -- 边框(虚线效果用多段线模拟)
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, sx - pw/2, sy - ph/2, pw, ph)
-    nvgStrokeColor(nvg_, nvgRGBA(255, 220, 50, alpha))
-    nvgStrokeWidth(nvg_, 3)
-    nvgStroke(nvg_)
-
-    -- 四角标记
-    local cornerLen = 12
-    local corners = {
-        {sx - pw/2, sy - ph/2, 1, 1},
-        {sx + pw/2, sy - ph/2, -1, 1},
-        {sx - pw/2, sy + ph/2, 1, -1},
-        {sx + pw/2, sy + ph/2, -1, -1},
-    }
-    nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, 220))
-    nvgStrokeWidth(nvg_, 3)
-    for _, c in ipairs(corners) do
-        nvgBeginPath(nvg_)
-        nvgMoveTo(nvg_, c[1], c[2])
-        nvgLineTo(nvg_, c[1] + cornerLen * c[3], c[2])
-        nvgMoveTo(nvg_, c[1], c[2])
-        nvgLineTo(nvg_, c[1], c[2] + cornerLen * c[4])
-        nvgStroke(nvg_)
-    end
-
-    -- "📷" 相机图标文字
-    nvgFontSize(nvg_, 20)
-    nvgFontFace(nvg_, "sans")
-    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
-    nvgFillColor(nvg_, nvgRGBA(255, 220, 50, 200))
-    nvgText(nvg_, sx, sy - ph/2 - 24, "📷 拍照区域", nil)
-end
-
---- 绘制单个玩家（共享函数）
---- @param params table {sx, sy, color, skin, skinIdx, facing, limbSwing, armSwing, inAir, isMoving, onGround, velY, name}
-function DrawSinglePlayer(params)
-    local ppu = GetPixelsPerUnit()
-    local r = CONFIG.PlayerRadius * playerScale_ * ppu
-    local sx, sy = params.sx, params.sy
-    local c = params.color
-    local skin = params.skin
-    local facing = params.facing
-    local limbSwing = params.limbSwing
-    local armSwing = params.armSwing
-    local inAir = params.inAir
-    local isMoving = params.isMoving
-    local onGround = params.onGround
-    local velY = params.velY or 0
-    local name = params.name
-
-    -- 部件尺寸（基于文档比例，r=20px 基准）
-    local headR = r * 0.75
-    local torsoW = r * 1.8
-    local torsoH = r * 2.0
-    local armW = r * 0.28
-    local armH = r * 0.85
-    local handR = r * 0.17
-    local legW = r * 0.32
-    local legH = r * 0.9
-    local shoeW = r * 0.45
-    local shoeH = r * 0.26
-    -- 编辑器偏移缩放因子（编辑器值基于 1080p 设计，ppu=100 时 r=40）
-    -- 乘以 playerScale_ 使偏移量随角色整体缩放等比变化
-    local editorScale = ppu / 100 * playerScale_
-
-    -- 身体中心偏移
-    local torsoY = sy
-    local headY = torsoY - torsoH * 0.35 - headR
-    local hipY = torsoY + torsoH * 0.45
-
-    if skin then
-        local ac = skin.armColor
-        local hc = skin.handColor
-        local lc = skin.legColor
-        local sc = skin.shoeColor
-
-        -- ========== 1. 腿部 + 鞋子（最底层）==========
-        local lt = skin.legTransform
-        local legSpacing = torsoW * 0.22 + (lt and lt.spacing or 0) * editorScale
-        for side = -1, 1, 2 do
-            local legAngle = side == -1 and limbSwing or -limbSwing
-            local legCX = sx + side * legSpacing + (lt and lt.offsetX or 0) * editorScale
-
-            nvgSave(nvg_)
-            nvgTranslate(nvg_, legCX, hipY + (lt and lt.offsetY or 0) * editorScale)
-            nvgRotate(nvg_, legAngle)
-
-            nvgBeginPath(nvg_)
-            nvgRoundedRect(nvg_, -legW / 2, 0, legW, legH, legW * 0.3)
-            nvgFillColor(nvg_, nvgRGBA(lc[1], lc[2], lc[3], lc[4]))
-            nvgFill(nvg_)
-
-            nvgBeginPath(nvg_)
-            nvgRoundedRect(nvg_, -shoeW / 2, legH - shoeH * 0.3, shoeW, shoeH, shoeH * 0.3)
-            nvgFillColor(nvg_, nvgRGBA(sc[1], sc[2], sc[3], sc[4]))
-            nvgFill(nvg_)
-
-            nvgRestore(nvg_)
-        end
-
-        -- ========== 2. 躯干（图片，圆角矩形裁剪）==========
-        local tt = skin.torsoTransform
-        nvgSave(nvg_)
-        nvgTranslate(nvg_, sx + tt.offsetX * editorScale, torsoY + tt.offsetY * editorScale)
-        nvgRotate(nvg_, math.rad(tt.rotation))
-        nvgScale(nvg_, tt.scale, tt.scale)
-
-        local halfTW = torsoW / 2
-        local halfTH = torsoH / 2
-        local cornerR = torsoW * 0.15
-
-        if skin.torsoImg > 0 then
-            nvgBeginPath(nvg_)
-            nvgRoundedRect(nvg_, -halfTW, -halfTH, torsoW, torsoH, cornerR)
-            local imgPaint
-            if facing < 0 then
-                imgPaint = nvgImagePattern(nvg_, halfTW, -halfTH, -torsoW, torsoH, 0, skin.torsoImg, 1.0)
-            else
-                imgPaint = nvgImagePattern(nvg_, -halfTW, -halfTH, torsoW, torsoH, 0, skin.torsoImg, 1.0)
-            end
-            nvgFillPaint(nvg_, imgPaint)
-            nvgFill(nvg_)
-        else
-            nvgBeginPath(nvg_)
-            nvgRoundedRect(nvg_, -halfTW, -halfTH, torsoW, torsoH, cornerR)
-            nvgFillColor(nvg_, nvgRGBA(ac[1], ac[2], ac[3], ac[4]))
-            nvgFill(nvg_)
-        end
-        nvgRestore(nvg_)
-
-        -- ========== 3. 头部（图片，圆形裁剪）==========
-        local ht = skin.headTransform
-        nvgSave(nvg_)
-        nvgTranslate(nvg_, sx + ht.offsetX * editorScale, headY + ht.offsetY * editorScale)
-        nvgRotate(nvg_, math.rad(ht.rotation))
-        nvgScale(nvg_, ht.scale, ht.scale)
-
-        if skin.headImg > 0 then
-            nvgBeginPath(nvg_)
-            nvgCircle(nvg_, 0, 0, headR)
-            local headImgPaint
-            if facing < 0 then
-                headImgPaint = nvgImagePattern(nvg_, headR, -headR, -headR * 2, headR * 2, 0, skin.headImg, 1.0)
-            else
-                headImgPaint = nvgImagePattern(nvg_, -headR, -headR, headR * 2, headR * 2, 0, skin.headImg, 1.0)
-            end
-            nvgFillPaint(nvg_, headImgPaint)
-            nvgFill(nvg_)
-        else
-            nvgBeginPath(nvg_)
-            nvgCircle(nvg_, 0, 0, headR)
-            nvgFillColor(nvg_, nvgRGBA(hc[1], hc[2], hc[3], hc[4]))
-            nvgFill(nvg_)
-        end
-        nvgRestore(nvg_)
-
-        -- ========== 4. 手臂 + 手掌（最上层）==========
-        local at = skin.armTransform
-        local shoulderY = torsoY - torsoH * 0.3
-        local armOffsetX = torsoW / 2 + armW * 0.3 + (at and at.spacing or 0) * editorScale
-        for side = -1, 1, 2 do
-            local armAngle = side == -1 and armSwing or -armSwing
-            local armCX = sx + side * armOffsetX + (at and at.offsetX or 0) * editorScale
-
-            nvgSave(nvg_)
-            nvgTranslate(nvg_, armCX, shoulderY + (at and at.offsetY or 0) * editorScale)
-            nvgRotate(nvg_, armAngle)
-
-            nvgBeginPath(nvg_)
-            nvgRoundedRect(nvg_, -armW / 2, 0, armW, armH, armW * 0.4)
-            nvgFillColor(nvg_, nvgRGBA(ac[1], ac[2], ac[3], ac[4]))
-            nvgFill(nvg_)
-
-            nvgBeginPath(nvg_)
-            nvgCircle(nvg_, 0, armH + handR * 0.5, handR)
-            nvgFillColor(nvg_, nvgRGBA(hc[1], hc[2], hc[3], hc[4]))
-            nvgFill(nvg_)
-
-            nvgRestore(nvg_)
-        end
-
-    else
-        -- ========== 无皮肤回退：简单圆形 ==========
-        nvgBeginPath(nvg_)
-        nvgCircle(nvg_, sx, sy, r)
-        nvgFillColor(nvg_, nvgRGBA(c[1], c[2], c[3], c[4]))
-        nvgFill(nvg_)
-    end
-
-    -- ========== 速度线效果 ==========
-    if isMoving and onGround then
-        local lineDir = -facing
-        for l = 1, 3 do
-            local lx = sx + lineDir * (torsoW / 2 + 4 + l * 5)
-            local ly = sy - 4 + l * 5
-            local lineLen = 6 + (3 - l) * 3
-            nvgBeginPath(nvg_)
-            nvgMoveTo(nvg_, lx, ly)
-            nvgLineTo(nvg_, lx + lineDir * lineLen, ly)
-            nvgStrokeColor(nvg_, nvgRGBA(200, 200, 200, 150 - l * 40))
-            nvgStrokeWidth(nvg_, 1.5)
-            nvgStroke(nvg_)
-        end
-    end
-
-    -- ========== 跳跃气流效果 ==========
-    if inAir and velY > 2 then
-        for l = 1, 3 do
-            nvgBeginPath(nvg_)
-            nvgCircle(nvg_, sx - 6 + l * 6, hipY + legH + 8 + l * 4, 2 - l * 0.4)
-            nvgFillColor(nvg_, nvgRGBA(255, 255, 255, 120 - l * 30))
-            nvgFill(nvg_)
-        end
-    end
-
-    -- ========== 名字标签 ==========
-    nvgFontSize(nvg_, 14)
-    nvgFontFace(nvg_, "sans")
-    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
-    nvgFillColor(nvg_, nvgRGBA(c[1], c[2], c[3], 255))
-    local nameY = skin and (headY - headR - 6) or (sy - r - 10)
-    nvgText(nvg_, sx, nameY, name, nil)
-
-    -- ========== 碰撞体线框（调试） ==========
-    if showCollisionDebug_ then
-        -- 使用视觉半径(CONFIG.PlayerRadius)绘制，与入镜检测一致
-        local capR = CONFIG.PlayerRadius * playerScale_ * ppu
-        local capH = capsuleHeight_ * playerScale_ * (CONFIG.PlayerRadius / capsuleRadius_) * ppu
-        local boxH = capH - capR * 2
-        if boxH < 1 then boxH = 1 end
-
-        nvgStrokeWidth(nvg_, 2.0)
-        nvgStrokeColor(nvg_, nvgRGBA(0, 255, 0, 200))
-
-        -- 胶囊轮廓（绿色）：上半圆 + 矩形两侧 + 下半圆
-        nvgBeginPath(nvg_)
-        -- 上半圆（CW=2：从左经上到右，向外凸出）
-        nvgArc(nvg_, sx, sy - boxH / 2, capR, math.pi, 0, 2)
-        -- 右侧直线
-        nvgLineTo(nvg_, sx + capR, sy + boxH / 2)
-        -- 下半圆（CW=2：从右经下到左，向外凸出）
-        nvgArc(nvg_, sx, sy + boxH / 2, capR, 0, math.pi, 2)
-        -- 左侧直线
-        nvgLineTo(nvg_, sx - capR, sy - boxH / 2)
-        nvgClosePath(nvg_)
-        nvgStroke(nvg_)
-
-        -- 脚部传感器圆（黄色）
-        local footR = capR * 0.6
-        local footOffY = (capH / 2) * 0.9
-        nvgBeginPath(nvg_)
-        nvgCircle(nvg_, sx, sy + footOffY, footR)
-        nvgStrokeColor(nvg_, nvgRGBA(255, 255, 0, 200))
-        nvgStroke(nvg_)
-    end
-end
-
-function DrawPlayers()
-    for i, p in ipairs(players_) do
-        local pos = p.node.position2D
-        local sx, sy = PhysToScreen(pos.x, pos.y)
-        local skinIdx = p.config.skinIndex or 1
-        local skin = skinsRuntime_[skinIdx]
-
-        -- 计算动画参数
-        local limbSwing = 0
-        local armSwing = 0
-        local inAir = not p.onGround
-        if inAir then
-            limbSwing = 0.35
-            armSwing = -(math.pi + 0.4)
-        elseif p.isMoving then
-            limbSwing = math.sin(p.animTime) * 0.5
-            armSwing = -math.sin(p.animTime) * 0.4
-        end
-
-        DrawSinglePlayer({
-            sx = sx, sy = sy,
-            color = p.config.color,
-            skin = skin,
-            facing = p.facing,
-            limbSwing = limbSwing,
-            armSwing = armSwing,
-            inAir = inAir,
-            isMoving = p.isMoving,
-            onGround = p.onGround,
-            velY = p.velY or 0,
-            name = p.config.name,
-        })
-    end
-end
-
 -- ============================================================================
--- 皮肤编辑器预览：在面板左侧用 NanoVG 绘制角色（不被 UI 层遮挡）
+-- 大厅渲染
 -- ============================================================================
-function DrawSkinEditorPreview()
-    if not skinEditorOpen_ then return end
-    local skin = skinsRuntime_[1]
-    if not skin then return end
+function DrawLobby()
+    local nvg = nvg_
+    local sw, sh = screenW_, screenH_
 
-    -- 预览区域位置计算：
-    -- UI面板: position=absolute, top=50, right=10, padding=10
-    -- 面板内容宽: 左列240 + gap10 + 右列240 = 490, + padding*2 = 510
-    -- 面板实际渲染可能稍宽（slider内部元素），预估 540
-    -- 预览区放在面板左侧，留 20px 间距避免重叠
-    local previewW = 180
-    local previewH = 320
-    local panelLeftEdge = screenW_ - 560
-    local previewRight = panelLeftEdge - 20
-    local previewLeft = previewRight - previewW
-    local previewTop = 50  -- 与面板顶部对齐
-    local previewCenterX = previewLeft + previewW / 2
-    local previewCenterY = previewTop + previewH * 0.45  -- 角色略偏上
-
-    -- 绘制预览区背景（圆角深色面板）
-    nvgBeginPath(nvg_)
-    nvgRoundedRect(nvg_, previewLeft, previewTop, previewW, previewH, 8)
-    nvgFillColor(nvg_, nvgRGBA(15, 15, 25, 220))
-    nvgFill(nvg_)
-    -- 边框
-    nvgBeginPath(nvg_)
-    nvgRoundedRect(nvg_, previewLeft, previewTop, previewW, previewH, 8)
-    nvgStrokeColor(nvg_, nvgRGBA(60, 60, 80, 180))
-    nvgStrokeWidth(nvg_, 1)
-    nvgStroke(nvg_)
+    -- 背景
+    nvgBeginPath(nvg)
+    nvgRect(nvg, 0, 0, sw, sh)
+    local bg = nvgLinearGradient(nvg, 0, 0, 0, sh,
+        nvgRGBA(30, 40, 60, 255), nvgRGBA(15, 20, 35, 255))
+    nvgFillPaint(nvg, bg)
+    nvgFill(nvg)
 
     -- 标题
-    nvgFontSize(nvg_, 12)
-    nvgFontFace(nvg_, "sans")
-    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
-    nvgFillColor(nvg_, nvgRGBA(120, 120, 140, 255))
-    nvgText(nvg_, previewCenterX, previewTop + 6, "预览", nil)
+    nvgFontSize(nvg, 36)
+    nvgFontFace(nvg, "sans")
+    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg, nvgRGBA(255, 220, 80, 255))
+    nvgText(nvg, sw/2, sh * 0.12, "Photo Rush", nil)
 
-    -- 模拟行走动画
-    local limbSwing = math.sin(skinEditorAnimTime_) * 0.5
-    local armSwing = -math.sin(skinEditorAnimTime_) * 0.4
+    nvgFontSize(nvg, 16)
+    nvgFillColor(nvg, nvgRGBA(180, 200, 220, 200))
+    nvgText(nvg, sw/2, sh * 0.18, "按跳跃键加入 → 选皮肤(左右键) → 再按跳跃准备", nil)
 
-    DrawSinglePlayer({
-        sx = previewCenterX,
-        sy = previewCenterY,
-        color = PLAYERS[1].color,
-        skin = skin,
-        facing = 1,
-        limbSwing = limbSwing,
-        armSwing = armSwing,
-        inAir = false,
-        isMoving = true,
-        onGround = true,
-        velY = 0,
-        name = "",
-    })
-end
+    -- 玩家槽位
+    local slotW = 140
+    local slotH = 200
+    local totalW = #PLAYERS * slotW + (#PLAYERS - 1) * 20
+    local startX = (sw - totalW) / 2
 
-function DrawCountdown()
-    if gameState_ ~= "countdown" then return end
+    for i, slot in ipairs(lobby_.slots) do
+        local sx = startX + (i - 1) * (slotW + 20)
+        local sy = sh * 0.3
+        local pdata = PLAYERS[i]
+        local c = pdata.color
 
-    local num = math.ceil(countdown_)
-    local text = tostring(num)
-
-    -- 大数字居中
-    local scale = 1.0 + (countdown_ - math.floor(countdown_)) * 0.3
-    nvgFontSize(nvg_, 80 * scale)
-    nvgFontFace(nvg_, "sans")
-    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-
-    -- 阴影
-    nvgFillColor(nvg_, nvgRGBA(0, 0, 0, 150))
-    nvgText(nvg_, screenW_/2 + 3, screenH_/2 + 3, text, nil)
-
-    -- 主体(白色)
-    local urgency = math.max(0, 1 - countdown_ / CONFIG.CountdownTime)
-    local r = math.floor(255 * urgency)
-    local g = math.floor(255 * (1 - urgency))
-    nvgFillColor(nvg_, nvgRGBA(r + 100, g + 100, 100, 255))
-    nvgText(nvg_, screenW_/2, screenH_/2, text, nil)
-end
-
-function DrawFlashEffect()
-    if gameState_ ~= "flash" then return end
-
-    -- 白色闪光(快速闪烁)
-    local alpha = math.floor((flashTimer_ / 0.3) * 255)
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, 0, 0, screenW_, screenH_)
-    nvgFillColor(nvg_, nvgRGBA(255, 255, 255, math.min(alpha, 220)))
-    nvgFill(nvg_)
-end
-
-function DrawShowPhoto()
-    if gameState_ ~= "showPhoto" then return end
-
-    -- 淡入动画（0.3秒淡入）
-    local progress = math.min(1.0, (2.5 - showPhotoTimer_) / 0.3)
-
-    nvgSave(nvg_)
-
-    -- 1) 全屏半透明黑色遮罩
-    local maskAlpha = math.floor(200 * progress)
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, 0, 0, screenW_, screenH_)
-    nvgFillColor(nvg_, nvgRGBA(0, 0, 0, maskAlpha))
-    nvgFill(nvg_)
-
-    -- 2) 计算拍立得照片展示区域（拍照区域的宽高比）
-    local zoneAspect = photoZone_.width / photoZone_.height
-
-    -- 照片最大占屏幕 65% 宽、50% 高
-    local maxPhotoW = screenW_ * 0.65
-    local maxPhotoH = screenH_ * 0.50
-    local photoW, photoH
-
-    if maxPhotoW / zoneAspect <= maxPhotoH then
-        photoW = maxPhotoW
-        photoH = maxPhotoW / zoneAspect
-    else
-        photoH = maxPhotoH
-        photoW = maxPhotoH * zoneAspect
-    end
-
-    -- 拍立得相框：上/左/右白边等宽，下方白边更大（放文字）
-    local framePad = math.floor(photoW * 0.05)
-    local frameBottom = math.floor(photoH * 0.25)
-
-    local totalW = photoW + framePad * 2
-    local totalH = photoH + framePad + frameBottom
-
-    -- 居中定位（稍偏上）
-    local frameX = (screenW_ - totalW) / 2
-    local frameY = (screenH_ - totalH) / 2 - screenH_ * 0.03
-
-    -- 弹入动画（从稍下方弹起）
-    local offsetY = (1.0 - progress) * 40
-    frameY = frameY + offsetY
-
-    -- 3) 相框阴影
-    nvgBeginPath(nvg_)
-    nvgRoundedRect(nvg_, frameX + 4, frameY + 5, totalW, totalH, 5)
-    nvgFillColor(nvg_, nvgRGBA(0, 0, 0, math.floor(80 * progress)))
-    nvgFill(nvg_)
-
-    -- 4) 绘制白色相框背景（拍立得风格）
-    nvgBeginPath(nvg_)
-    nvgRoundedRect(nvg_, frameX, frameY, totalW, totalH, 5)
-    nvgFillColor(nvg_, nvgRGBA(255, 255, 255, math.floor(250 * progress)))
-    nvgFill(nvg_)
-
-    -- 5) 在相框内绘制游戏快照（裁剪到照片区域）
-    local photoX = frameX + framePad
-    local photoY = frameY + framePad
-
-    -- 使用 scissor 裁剪到照片区域
-    nvgScissor(nvg_, photoX, photoY, photoW, photoH)
-
-    -- 计算缩放：将拍照区域（世界坐标）映射到照片像素区域
-    -- 拍照区域中心的屏幕坐标
-    local zoneCenterSX, zoneCenterSY = PhysToScreen(photoZone_.x, photoZone_.y)
-    -- 拍照区域在当前屏幕上的像素尺寸
-    local ppu = GetPixelsPerUnit()
-    local zoneScreenW = photoZone_.width * ppu
-    local zoneScreenH = photoZone_.height * ppu
-
-    -- 缩放比例：将拍照区域屏幕尺寸映射到照片尺寸
-    local scaleX = photoW / zoneScreenW
-    local scaleY = photoH / zoneScreenH
-    local scale = math.min(scaleX, scaleY)
-
-    -- 变换：先平移使拍照区域中心对齐照片中心，再缩放
-    local photoCenterX = photoX + photoW / 2
-    local photoCenterY = photoY + photoH / 2
-
-    nvgSave(nvg_)
-    nvgTranslate(nvg_, photoCenterX, photoCenterY)
-    nvgScale(nvg_, scale, scale)
-    nvgTranslate(nvg_, -zoneCenterSX, -zoneCenterSY)
-
-    -- 重绘背景
-    DrawBackground()
-    -- 重绘平台
-    DrawPlatforms()
-
-    -- 绘制拍照区域边框（固定alpha，不闪烁）
-    local zsx, zsy = PhysToScreen(photoZone_.x, photoZone_.y)
-    local zpw = photoZone_.width * ppu
-    local zph = photoZone_.height * ppu
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, zsx - zpw/2, zsy - zph/2, zpw, zph)
-    nvgFillColor(nvg_, nvgRGBA(255, 220, 50, 30))
-    nvgFill(nvg_)
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, zsx - zpw/2, zsy - zph/2, zpw, zph)
-    nvgStrokeColor(nvg_, nvgRGBA(255, 220, 50, 160))
-    nvgStrokeWidth(nvg_, 3)
-    nvgStroke(nvg_)
-
-    -- 绘制快照中的玩家（使用保存的位置）
-    DrawPlayersSnapshot()
-
-    nvgRestore(nvg_)
-    -- 取消 scissor
-    nvgResetScissor(nvg_)
-
-    -- 6) 照片内暗角效果
-    local vigAlpha = math.floor(40 * progress)
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, photoX, photoY, photoW, photoH * 0.15)
-    local topVig = nvgLinearGradient(nvg_, photoX, photoY, photoX, photoY + photoH * 0.15,
-        nvgRGBA(0, 0, 0, vigAlpha), nvgRGBA(0, 0, 0, 0))
-    nvgFillPaint(nvg_, topVig)
-    nvgFill(nvg_)
-
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, photoX, photoY + photoH * 0.85, photoW, photoH * 0.15)
-    local botVig = nvgLinearGradient(nvg_, photoX, photoY + photoH * 0.85, photoX, photoY + photoH,
-        nvgRGBA(0, 0, 0, 0), nvgRGBA(0, 0, 0, vigAlpha))
-    nvgFillPaint(nvg_, botVig)
-    nvgFill(nvg_)
-
-    -- 7) 底部结果文字（在拍立得白色区域内）
-    local textY = photoY + photoH + frameBottom * 0.5
-    nvgFontSize(nvg_, math.max(18, math.floor(frameBottom * 0.35)))
-    nvgFontFace(nvg_, "sans")
-    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-
-    if #roundResult_ > 0 then
-        local names = {}
-        for _, idx in ipairs(roundResult_) do
-            table.insert(names, players_[idx].config.name)
-        end
-        nvgFillColor(nvg_, nvgRGBA(40, 160, 60, math.floor(255 * progress)))
-        nvgText(nvg_, screenW_ / 2, textY, table.concat(names, " & ") .. " 入镜! +1", nil)
-    else
-        nvgFillColor(nvg_, nvgRGBA(200, 80, 80, math.floor(255 * progress)))
-        nvgText(nvg_, screenW_ / 2, textY, "没人入镜!", nil)
-    end
-
-    -- 8) 顶部 "PHOTO" 标签
-    nvgFontSize(nvg_, 13)
-    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
-    nvgFillColor(nvg_, nvgRGBA(255, 255, 255, math.floor(180 * progress)))
-    nvgText(nvg_, screenW_ / 2, frameY - 6, "PHOTO", nil)
-
-    nvgRestore(nvg_)
-end
-
---- 绘制快照中的玩家（使用保存的位置而非实时位置）
-function DrawPlayersSnapshot()
-    for i, snap in ipairs(photoSnapshot_) do
-        local p = players_[i]
-        if not p then break end
-
-        local sx, sy = PhysToScreen(snap.x, snap.y)
-        local skinIdx = p.config.skinIndex or 1
-        local skin = skinsRuntime_[skinIdx]
-
-        -- 使用保存的动画状态还原拍照瞬间的姿态
-        local limbSwing = 0
-        local armSwing = 0
-        local inAir = not snap.onGround
-
-        if inAir then
-            limbSwing = 0.35
-            armSwing = -(math.pi + 0.4)
-        elseif snap.isMoving then
-            limbSwing = math.sin(snap.animTime) * 0.5
-            armSwing = -math.sin(snap.animTime) * 0.4
-        end
-
-        DrawSinglePlayer({
-            sx = sx, sy = sy,
-            color = p.config.color,
-            skin = skin,
-            facing = snap.facing,
-            limbSwing = limbSwing,
-            armSwing = armSwing,
-            inAir = inAir,
-            isMoving = snap.isMoving,
-            onGround = snap.onGround,
-            velY = 0,
-            name = p.config.name,
-        })
-    end
-end
-
-function DrawBulletin()
-    if gameState_ ~= "bulletin" then return end
-
-    -- 计算动画进度 (0~1)
-    local progress = 0
-    if bulletin_.animPhase == "enter" then
-        progress = math.min(1.0, bulletin_.animTimer / bulletin_.enterDuration)
-    elseif bulletin_.animPhase == "stay" then
-        progress = 1.0
-    elseif bulletin_.animPhase == "exit" then
-        progress = 1.0 - math.min(1.0, bulletin_.animTimer / bulletin_.exitDuration)
-    end
-
-    -- easeOutBack 缓动（弹入时有弹性感）
-    local function easeOutBack(t)
-        local c1 = 1.70158
-        local c3 = c1 + 1
-        return 1 + c3 * math.pow(t - 1, 3) + c1 * math.pow(t - 1, 2)
-    end
-
-    -- 弹入用 easeOutBack，收起用加速
-    local displayProgress
-    if bulletin_.animPhase == "enter" then
-        displayProgress = easeOutBack(progress)
-    elseif bulletin_.animPhase == "exit" then
-        displayProgress = progress * progress  -- easeIn (加速收起)
-    else
-        displayProgress = 1.0
-    end
-
-    -- 半透明背景遮罩
-    local maskAlpha = math.floor(140 * displayProgress)
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, 0, 0, screenW_, screenH_)
-    nvgFillColor(nvg_, nvgRGBA(0, 0, 0, maskAlpha))
-    nvgFill(nvg_)
-
-    -- 公告板尺寸
-    local boardW = math.min(480, screenW_ * 0.7)
-    local boardH = math.min(320, screenH_ * 0.6)
-    local boardX = (screenW_ - boardW) / 2
-    -- 从上方滑入：初始位置在屏幕上方外面
-    local targetY = (screenH_ - boardH) / 2
-    local startY = -boardH - 20
-    local boardY = startY + (targetY - startY) * displayProgress
-
-    nvgSave(nvg_)
-
-    -- 公告板阴影
-    nvgBeginPath(nvg_)
-    nvgRoundedRect(nvg_, boardX + 4, boardY + 6, boardW, boardH, 16)
-    nvgFillColor(nvg_, nvgRGBA(0, 0, 0, math.floor(80 * displayProgress)))
-    nvgFill(nvg_)
-
-    -- 公告板主体（深色背景+圆角）
-    nvgBeginPath(nvg_)
-    nvgRoundedRect(nvg_, boardX, boardY, boardW, boardH, 16)
-    local boardGrad = nvgLinearGradient(nvg_, boardX, boardY, boardX, boardY + boardH,
-        nvgRGBA(45, 55, 75, 250), nvgRGBA(30, 38, 55, 250))
-    nvgFillPaint(nvg_, boardGrad)
-    nvgFill(nvg_)
-
-    -- 边框
-    nvgBeginPath(nvg_)
-    nvgRoundedRect(nvg_, boardX, boardY, boardW, boardH, 16)
-    nvgStrokeColor(nvg_, nvgRGBA(100, 160, 255, math.floor(180 * displayProgress)))
-    nvgStrokeWidth(nvg_, 2)
-    nvgStroke(nvg_)
-
-    -- 顶部标题栏背景
-    local titleBarH = 50
-    nvgBeginPath(nvg_)
-    -- 顶部两个圆角，底部直角（用 clip 模拟）
-    nvgRoundedRect(nvg_, boardX, boardY, boardW, titleBarH, 16)
-    nvgFillColor(nvg_, nvgRGBA(60, 120, 220, math.floor(200 * displayProgress)))
-    nvgFill(nvg_)
-    -- 底部覆盖掉圆角
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, boardX, boardY + titleBarH - 16, boardW, 16)
-    nvgFillColor(nvg_, nvgRGBA(60, 120, 220, math.floor(200 * displayProgress)))
-    nvgFill(nvg_)
-
-    -- 标题文字: "第 X 关"
-    nvgFontSize(nvg_, 26)
-    nvgFontFace(nvg_, "sans")
-    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(nvg_, nvgRGBA(255, 255, 255, math.floor(255 * displayProgress)))
-    nvgText(nvg_, screenW_ / 2, boardY + titleBarH / 2, "第 " .. bulletin_.round .. " 关", nil)
-
-    -- 玩法说明文字
-    local descIdx = ((bulletin_.round - 1) % #ROUND_DESCRIPTIONS) + 1
-    local desc = ROUND_DESCRIPTIONS[descIdx]
-    nvgFontSize(nvg_, 20)
-    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(nvg_, nvgRGBA(230, 230, 240, math.floor(240 * displayProgress)))
-    nvgText(nvg_, screenW_ / 2, boardY + titleBarH + 45, desc, nil)
-
-    -- 玩家头像区域（按队伍分组）
-    local avatarY = boardY + titleBarH + 95
-    local avatarR = 22
-    local teamGap = 40  -- 两队之间间距
-
-    for t = 1, 2 do
-        local team = teams_[t]
-        local tc = team.color
-        local members = team.members
-        local teamCount = #members
-
-        -- 队伍区域水平位置：左队在左半，右队在右半
-        local teamCenterX
-        if t == 1 then
-            teamCenterX = boardX + boardW * 0.25
+        -- 槽位背景
+        nvgBeginPath(nvg)
+        nvgRoundedRect(nvg, sx, sy, slotW, slotH, 10)
+        if slot.joined then
+            nvgFillColor(nvg, nvgRGBA(c[1], c[2], c[3], 40))
         else
-            teamCenterX = boardX + boardW * 0.75
+            nvgFillColor(nvg, nvgRGBA(40, 40, 50, 180))
         end
+        nvgFill(nvg)
 
-        -- 队伍名称
-        nvgFontSize(nvg_, 16)
-        nvgFontFace(nvg_, "sans")
-        nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
-        nvgFillColor(nvg_, nvgRGBA(tc[1], tc[2], tc[3], math.floor(255 * displayProgress)))
-        nvgText(nvg_, teamCenterX, avatarY - avatarR - 10, team.name, nil)
+        -- 边框
+        nvgBeginPath(nvg)
+        nvgRoundedRect(nvg, sx, sy, slotW, slotH, 10)
+        if slot.ready then
+            nvgStrokeColor(nvg, nvgRGBA(80, 255, 120, 255))
+        elseif slot.joined then
+            nvgStrokeColor(nvg, nvgRGBA(c[1], c[2], c[3], 200))
+        else
+            nvgStrokeColor(nvg, nvgRGBA(80, 80, 100, 150))
+        end
+        nvgStrokeWidth(nvg, 2)
+        nvgStroke(nvg)
 
-        -- 绘制该队成员头像
-        local memberSpacing = (avatarR * 2 + 12)
-        local startX = teamCenterX - (teamCount - 1) * memberSpacing / 2
+        -- 玩家名称
+        nvgFontSize(nvg, 14)
+        nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+        nvgFillColor(nvg, nvgRGBA(c[1], c[2], c[3], 255))
+        nvgText(nvg, sx + slotW/2, sy + 10, pdata.name, nil)
 
-        for mIdx, pi in ipairs(members) do
-            local pdata = PLAYERS[pi]
-            local ax = startX + (mIdx - 1) * memberSpacing
-            local ay = avatarY
-            local c = pdata.color
-
-            -- 头像圆圈背景
-            nvgBeginPath(nvg_)
-            nvgCircle(nvg_, ax, ay, avatarR)
-            local avatarGrad = nvgRadialGradient(nvg_, ax - 3, ay - 3, 2, avatarR,
-                nvgRGBA(math.min(255, c[1] + 60), math.min(255, c[2] + 60), math.min(255, c[3] + 60), 255),
-                nvgRGBA(c[1], c[2], c[3], 255))
-            nvgFillPaint(nvg_, avatarGrad)
-            nvgFill(nvg_)
-
-            -- 队伍色边框
-            nvgBeginPath(nvg_)
-            nvgCircle(nvg_, ax, ay, avatarR)
-            nvgStrokeColor(nvg_, nvgRGBA(tc[1], tc[2], tc[3], 200))
-            nvgStrokeWidth(nvg_, 2.5)
-            nvgStroke(nvg_)
-
-            -- 头像里的眼睛
-            nvgBeginPath(nvg_)
-            nvgCircle(nvg_, ax - 5, ay - 4, 3)
-            nvgCircle(nvg_, ax + 5, ay - 4, 3)
-            nvgFillColor(nvg_, nvgRGBA(255, 255, 255, 255))
-            nvgFill(nvg_)
-            nvgBeginPath(nvg_)
-            nvgCircle(nvg_, ax - 4, ay - 3, 1.5)
-            nvgCircle(nvg_, ax + 6, ay - 3, 1.5)
-            nvgFillColor(nvg_, nvgRGBA(0, 0, 0, 255))
-            nvgFill(nvg_)
-
-            -- 微笑
-            nvgBeginPath(nvg_)
-            nvgArc(nvg_, ax, ay + 4, 5, 0.2, math.pi - 0.2, NVG_CW)
-            nvgStrokeColor(nvg_, nvgRGBA(0, 0, 0, 200))
-            nvgStrokeWidth(nvg_, 1.5)
-            nvgStroke(nvg_)
-
-            -- 名字
-            nvgFontSize(nvg_, 12)
-            nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
-            nvgFillColor(nvg_, nvgRGBA(c[1], c[2], c[3], math.floor(255 * displayProgress)))
-            nvgText(nvg_, ax, ay + avatarR + 4, pdata.name, nil)
-
-            -- 对勾（如果已确认）
-            if bulletin_.confirmed[pi] then
-                nvgBeginPath(nvg_)
-                nvgCircle(nvg_, ax + avatarR * 0.6, ay - avatarR * 0.6, 10)
-                nvgFillColor(nvg_, nvgRGBA(40, 200, 80, 255))
-                nvgFill(nvg_)
-                nvgBeginPath(nvg_)
-                nvgCircle(nvg_, ax + avatarR * 0.6, ay - avatarR * 0.6, 10)
-                nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, 255))
-                nvgStrokeWidth(nvg_, 1.5)
-                nvgStroke(nvg_)
-
-                local cx = ax + avatarR * 0.6
-                local cy = ay - avatarR * 0.6
-                nvgBeginPath(nvg_)
-                nvgMoveTo(nvg_, cx - 4, cy)
-                nvgLineTo(nvg_, cx - 1, cy + 3)
-                nvgLineTo(nvg_, cx + 5, cy - 3)
-                nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, 255))
-                nvgStrokeWidth(nvg_, 2)
-                nvgLineCap(nvg_, NVG_ROUND)
-                nvgLineJoin(nvg_, NVG_ROUND)
-                nvgStroke(nvg_)
+        if slot.joined then
+            -- 绘制角色预览
+            local skinIdx = slot.skinIndex
+            local skin = skinsRuntime_[skinIdx]
+            if skin then
+                local limbSwing = math.sin(lobby_.animTime + i) * 0.3
+                local armSwing = -math.sin(lobby_.animTime + i) * 0.2
+                Render.DrawSinglePlayer({
+                    sx = sx + slotW/2,
+                    sy = sy + slotH * 0.55,
+                    color = c,
+                    skin = skin,
+                    facing = 1,
+                    limbSwing = limbSwing,
+                    armSwing = armSwing,
+                    inAir = false,
+                    isMoving = true,
+                    onGround = true,
+                    velY = 0,
+                    name = "",
+                })
             end
+
+            -- 皮肤名称
+            local skinName = (skin and skin.name) or "?"
+            nvgFontSize(nvg, 11)
+            nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+            nvgFillColor(nvg, nvgRGBA(200, 200, 200, 180))
+            nvgText(nvg, sx + slotW/2, sy + slotH - 30, skinName, nil)
+
+            -- 状态
+            nvgFontSize(nvg, 13)
+            nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+            if slot.ready then
+                nvgFillColor(nvg, nvgRGBA(80, 255, 120, 255))
+                nvgText(nvg, sx + slotW/2, sy + slotH - 10, "READY!", nil)
+            else
+                nvgFillColor(nvg, nvgRGBA(255, 220, 80, 200))
+                nvgText(nvg, sx + slotW/2, sy + slotH - 10, "← 选皮肤 →", nil)
+            end
+        else
+            -- 未加入状态
+            nvgFontSize(nvg, 14)
+            nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+            nvgFillColor(nvg, nvgRGBA(120, 120, 140, 180))
+            nvgText(nvg, sx + slotW/2, sy + slotH/2, "按 " .. GetKeyName(pdata.keys.jump) .. " 加入", nil)
         end
     end
 
-    -- VS 分隔符
-    nvgFontSize(nvg_, 22)
-    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(nvg_, nvgRGBA(255, 200, 80, math.floor(220 * displayProgress)))
-    nvgText(nvg_, screenW_ / 2, avatarY, "VS", nil)
-
-    -- 底部提示文字
-    local hintY = boardY + boardH - 35
-    local hintAlpha = math.floor((math.sin(os.clock() * 3) * 0.3 + 0.7) * 255 * displayProgress)
-    nvgFontSize(nvg_, 15)
-    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(nvg_, nvgRGBA(180, 200, 255, hintAlpha))
-    nvgText(nvg_, screenW_ / 2, hintY, "按 [跳跃键] 表示已理解规则", nil)
-
-    nvgRestore(nvg_)
+    -- 底部提示
+    local joinedCount = 0
+    for _, slot in ipairs(lobby_.slots) do
+        if slot.joined then joinedCount = joinedCount + 1 end
+    end
+    if joinedCount >= 2 then
+        nvgFontSize(nvg, 14)
+        nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+        nvgFillColor(nvg, nvgRGBA(200, 200, 200, 180))
+        nvgText(nvg, sw/2, sh - 30, "全员准备后自动开始 (至少2人)", nil)
+    end
 end
 
-function DrawGameOver()
-    if not gameOver_ then return end
+--- 获取按键显示名称
+function GetKeyName(key)
+    local names = {
+        [KEY_W] = "W", [KEY_S] = "S", [KEY_X] = "X", [KEY_I] = "I",
+        [KEY_Q] = "Q", [KEY_A] = "A", [KEY_Z] = "Z", [KEY_U] = "U",
+        [KEY_E] = "E", [KEY_D] = "D", [KEY_C] = "C", [KEY_O] = "O",
+    }
+    return names[key] or "?"
+end
 
-    -- 半透明遮罩
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, 0, 0, screenW_, screenH_)
-    nvgFillColor(nvg_, nvgRGBA(0, 0, 0, 180))
-    nvgFill(nvg_)
-
-    -- 获胜文字
-    nvgFontSize(nvg_, 56)
-    nvgFontFace(nvg_, "sans")
-    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(nvg_, nvgRGBA(255, 220, 50, 255))
-    nvgText(nvg_, screenW_/2, screenH_/2 - 30, winner_ .. " 获胜!", nil)
-
-    nvgFontSize(nvg_, 24)
-    nvgFillColor(nvg_, nvgRGBA(200, 200, 200, 255))
-    nvgText(nvg_, screenW_/2, screenH_/2 + 30, "按 R 重新开始", nil)
+-- ============================================================================
+-- 清理
+-- ============================================================================
+function Stop()
+    UI.Shutdown()
+    if nvg_ then nvgDelete(nvg_) end
 end

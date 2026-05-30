@@ -1,9 +1,0 @@
-{
-  "playerScale": 1.0,
-  "capsuleRadius": 0.3,
-  "capsuleHeight": 1.0,
-  "headTransform": { "scale": 1.4, "offsetX": 0, "offsetY": 0, "rotation": 0 },
-  "torsoTransform": { "scale": 1.0, "offsetX": 0, "offsetY": 0, "rotation": 0 },
-  "armTransform": { "offsetX": 0, "offsetY": 0, "spacing": -10 },
-  "legTransform": { "offsetX": 0, "offsetY": -20, "spacing": -3 }
-}
