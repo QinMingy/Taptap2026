@@ -588,9 +588,10 @@ function M.DrawSinglePlayer(params)
 
     -- 脚下椭圆形圈（仅游戏中显示，拍立得不显示）
     if showGlow then
-        local footEllipseY = hipY + legH + shoeH * 0.7
-        local ellipseRX = r * 1.3
-        local ellipseRY = r * 0.35
+        local fe = Cfg.PLAYER_VISUALS.footEllipse
+        local footEllipseY = hipY + legH + shoeH * fe.offsetY
+        local ellipseRX = r * fe.radiusX
+        local ellipseRY = r * fe.radiusY
         -- 按阵营颜色区分：通过 playerIndex 查找队伍
         local playerIdx = params.playerIndex or 0
         local teamIdx = G.playerTeam and G.playerTeam[playerIdx] or 0
@@ -600,10 +601,10 @@ function M.DrawSinglePlayer(params)
         nvgScale(nvg, 1.0, ellipseRY / ellipseRX)
         nvgBeginPath(nvg)
         nvgCircle(nvg, 0, 0, ellipseRX)
-        nvgFillColor(nvg, nvgRGBA(tc[1], tc[2], tc[3], 45))
+        nvgFillColor(nvg, nvgRGBA(tc[1], tc[2], tc[3], fe.fillAlpha))
         nvgFill(nvg)
-        nvgStrokeColor(nvg, nvgRGBA(tc[1], tc[2], tc[3], 130))
-        nvgStrokeWidth(nvg, 2.0)
+        nvgStrokeColor(nvg, nvgRGBA(tc[1], tc[2], tc[3], fe.strokeAlpha))
+        nvgStrokeWidth(nvg, fe.strokeWidth)
         nvgStroke(nvg)
         nvgRestore(nvg)
     end
@@ -754,15 +755,17 @@ function M.DrawSinglePlayer(params)
     end
 
     -- 名字标签
-    local nameY = skin and (headY - headR - 6) or (sy - r - 10)
+    local nl = Cfg.PLAYER_VISUALS.nameLabel
+    local nameY = skin and (headY - headR + nl.offsetY) or (sy - r + nl.offsetYNoSkin)
     nvgFontFace(nvg, "sans")
     nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
     if showGlow then
         -- 游戏中：加粗（多方向描边模拟）
-        nvgFontSize(nvg, 16)
-        nvgFillColor(nvg, nvgRGBA(0, 0, 0, 200))
-        for ox = -1, 1 do
-            for oy = -1, 1 do
+        nvgFontSize(nvg, nl.fontSize)
+        nvgFillColor(nvg, nvgRGBA(0, 0, 0, nl.outlineAlpha))
+        local ofs = nl.outlineOffset
+        for ox = -ofs, ofs do
+            for oy = -ofs, ofs do
                 if ox ~= 0 or oy ~= 0 then
                     nvgText(nvg, sx + ox, nameY + oy, name, nil)
                 end
@@ -772,7 +775,7 @@ function M.DrawSinglePlayer(params)
         nvgText(nvg, sx, nameY, name, nil)
     else
         -- 拍立得中：普通样式
-        nvgFontSize(nvg, 14)
+        nvgFontSize(nvg, nl.fontSizePhoto)
         nvgFillColor(nvg, nvgRGBA(c[1], c[2], c[3], 255))
         nvgText(nvg, sx, nameY, name, nil)
     end

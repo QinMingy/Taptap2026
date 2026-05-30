@@ -176,7 +176,7 @@ function M.CreateSkinEditor()
         id = "skinEditor",
         position = "absolute",
         top = 10, right = 10,
-        width = 420,
+        width = 620,
         maxHeight = "90%",
         backgroundColor = {20, 20, 30, 230},
         borderRadius = 10,
@@ -270,7 +270,7 @@ function M.CreateSkinEditor()
                                         }
                                     },
                                     UI.Button {
-                                        text = "保存配置", variant = "primary", height = 30, marginTop = 12,
+                                        text = "复制配置", variant = "primary", height = 30, marginTop = 12,
                                         onClick = function()
                                             local ok, err = pcall(function()
                                                 local data = {
@@ -281,22 +281,62 @@ function M.CreateSkinEditor()
                                                     torsoTransform = skin.torsoTransform,
                                                     armTransform = skin.armTransform,
                                                     legTransform = skin.legTransform,
+                                                    playerVisuals = Cfg.PLAYER_VISUALS,
                                                 }
                                                 local jsonStr = cjson.encode(data)
-                                                local saveFile = File("skin-editor.json", FILE_WRITE)
-                                                if saveFile and saveFile:IsOpen() then
-                                                    saveFile:WriteString(jsonStr)
-                                                    saveFile:Close()
-                                                    print("[SkinEditor] Config saved to skin-editor.json")
-                                                else
-                                                    print("[SkinEditor] ERROR: Failed to open file for writing!")
-                                                end
+                                                ui.useSystemClipboard = true
+                                                ui:SetClipboardText(jsonStr)
+                                                M.ShowExportPopup(jsonStr)
                                             end)
                                             if not ok then
-                                                print("[SkinEditor] ERROR saving: " .. tostring(err))
+                                                print("[SkinEditor] ERROR: " .. tostring(err))
                                             end
                                         end
                                     },
+                                }
+                            },
+                            -- ===== 第三列：脚下椭圆 + 名字标签 =====
+                            UI.Panel {
+                                flex = 1, gap = 4,
+                                children = {
+                                    UI.Label { text = "-- 脚下椭圆 --", fontSize = 11, fontColor = {140, 140, 140, 255} },
+                                    MakeSlider("FE.OffY", -2.0, 2.0, Cfg.PLAYER_VISUALS.footEllipse.offsetY, 0.1, function(self, v)
+                                        Cfg.PLAYER_VISUALS.footEllipse.offsetY = v; updateVal("FE.OffY", v)
+                                    end),
+                                    MakeSlider("FE.RX", 0.5, 3.0, Cfg.PLAYER_VISUALS.footEllipse.radiusX, 0.1, function(self, v)
+                                        Cfg.PLAYER_VISUALS.footEllipse.radiusX = v; updateVal("FE.RX", v)
+                                    end),
+                                    MakeSlider("FE.RY", 0.1, 1.5, Cfg.PLAYER_VISUALS.footEllipse.radiusY, 0.05, function(self, v)
+                                        Cfg.PLAYER_VISUALS.footEllipse.radiusY = v; updateVal("FE.RY", v)
+                                    end),
+                                    MakeSlider("FE.Fill", 0, 255, Cfg.PLAYER_VISUALS.footEllipse.fillAlpha, 5, function(self, v)
+                                        Cfg.PLAYER_VISUALS.footEllipse.fillAlpha = v; updateVal("FE.Fill", v)
+                                    end),
+                                    MakeSlider("FE.Strk", 0, 255, Cfg.PLAYER_VISUALS.footEllipse.strokeAlpha, 5, function(self, v)
+                                        Cfg.PLAYER_VISUALS.footEllipse.strokeAlpha = v; updateVal("FE.Strk", v)
+                                    end),
+                                    MakeSlider("FE.SW", 0.5, 5.0, Cfg.PLAYER_VISUALS.footEllipse.strokeWidth, 0.5, function(self, v)
+                                        Cfg.PLAYER_VISUALS.footEllipse.strokeWidth = v; updateVal("FE.SW", v)
+                                    end),
+                                    UI.Label { text = "-- 名字标签 --", fontSize = 11, fontColor = {140, 140, 140, 255} },
+                                    MakeSlider("NL.OffY", -30, 10, Cfg.PLAYER_VISUALS.nameLabel.offsetY, 1, function(self, v)
+                                        Cfg.PLAYER_VISUALS.nameLabel.offsetY = v; updateVal("NL.OffY", v)
+                                    end),
+                                    MakeSlider("NL.OffNS", -30, 10, Cfg.PLAYER_VISUALS.nameLabel.offsetYNoSkin, 1, function(self, v)
+                                        Cfg.PLAYER_VISUALS.nameLabel.offsetYNoSkin = v; updateVal("NL.OffNS", v)
+                                    end),
+                                    MakeSlider("NL.Size", 8, 32, Cfg.PLAYER_VISUALS.nameLabel.fontSize, 1, function(self, v)
+                                        Cfg.PLAYER_VISUALS.nameLabel.fontSize = v; updateVal("NL.Size", v)
+                                    end),
+                                    MakeSlider("NL.SzPh", 8, 32, Cfg.PLAYER_VISUALS.nameLabel.fontSizePhoto, 1, function(self, v)
+                                        Cfg.PLAYER_VISUALS.nameLabel.fontSizePhoto = v; updateVal("NL.SzPh", v)
+                                    end),
+                                    MakeSlider("NL.Outl", 0, 3, Cfg.PLAYER_VISUALS.nameLabel.outlineOffset, 1, function(self, v)
+                                        Cfg.PLAYER_VISUALS.nameLabel.outlineOffset = v; updateVal("NL.Outl", v)
+                                    end),
+                                    MakeSlider("NL.OAlp", 0, 255, Cfg.PLAYER_VISUALS.nameLabel.outlineAlpha, 5, function(self, v)
+                                        Cfg.PLAYER_VISUALS.nameLabel.outlineAlpha = v; updateVal("NL.OAlp", v)
+                                    end),
                                 }
                             },
                         }

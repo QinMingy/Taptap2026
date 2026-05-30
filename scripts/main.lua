@@ -17,6 +17,7 @@ local Cfg = require("config")
 local Gameplay = require("gameplay")
 local Render = require("render")
 local Editors = require("editors")
+local TitleScreen = require("title_screen")
 
 -- 快捷引用配置
 local CONFIG = Cfg.CONFIG
@@ -68,10 +69,10 @@ local function LoadSkinsConfig()
             name = "danding",
             headImage = "image/Charactor/danding/head_danding.png",
             torsoImage = "image/Charactor/danding/body_danding.png",
-            armColor = "#6B2A2AFF",
-            handColor = "#F5D2AAFF",
-            legColor = "#2A2A2AFF",
-            shoeColor = "#1A1A1AFF",
+            armColor = "#7B3030FF",
+            handColor = "#F0CDA0FF",
+            legColor = "#2D2D35FF",
+            shoeColor = "#1A1A20FF",
         },
         {
             name = "Vergil",
@@ -85,7 +86,7 @@ local function LoadSkinsConfig()
     }
 end
 
---- 编辑器 Transform 数据
+--- 编辑器 Transform 数据（从 assets/docs/skin-editor.json 读取）
 local function LoadSkinEditorConfig()
     local default = {
         playerScale = 1.0,
@@ -97,30 +98,46 @@ local function LoadSkinEditorConfig()
         legTransform = { offsetX = 0, offsetY = 0, spacing = 0 },
     }
     local jsonStr = nil
-    local docsFile = cache:GetFile("docs/skin-editor.json")
-    if docsFile then
-        jsonStr = docsFile:ReadString()
-        docsFile:Close()
+    local file = cache:GetFile("docs/skin-editor.json")
+    if file then
+        jsonStr = file:ReadString()
+        file:Close()
+        print("[SkinEditor] loaded docs/skin-editor.json, length=" .. (jsonStr and #jsonStr or 0))
+    else
+        print("[SkinEditor] ERROR: cannot find docs/skin-editor.json in assets")
+        return default
     end
     if not jsonStr or #jsonStr == 0 then
-        if fileSystem:FileExists("skin-editor.json") then
-            local file = File("skin-editor.json", FILE_READ)
-            if file:IsOpen() then
-                jsonStr = file:ReadString()
-                file:Close()
-            end
-        end
+        print("[SkinEditor] ERROR: file is empty")
+        return default
     end
-    if not jsonStr or #jsonStr == 0 then
-        local file = cache:GetFile("skin-editor.json")
-        if file then
-            jsonStr = file:ReadString()
-            file:Close()
-        end
-    end
-    if not jsonStr or #jsonStr == 0 then return default end
     local ok, data = pcall(cjson.decode, jsonStr)
-    if not ok or not data then return default end
+    if not ok or not data then
+        print("[SkinEditor] ERROR: cjson.decode failed: " .. tostring(data))
+        return default
+    end
+
+    -- 应用 playerVisuals 到 Cfg.PLAYER_VISUALS（以 docs/skin-editor.json 为准）
+    if data.playerVisuals then
+        local pv = data.playerVisuals
+        if pv.footEllipse then
+            for k, v in pairs(pv.footEllipse) do
+                Cfg.PLAYER_VISUALS.footEllipse[k] = v
+            end
+            print("[SkinEditor] footEllipse applied: offsetY=" .. tostring(Cfg.PLAYER_VISUALS.footEllipse.offsetY)
+                .. " strokeWidth=" .. tostring(Cfg.PLAYER_VISUALS.footEllipse.strokeWidth))
+        end
+        if pv.nameLabel then
+            for k, v in pairs(pv.nameLabel) do
+                Cfg.PLAYER_VISUALS.nameLabel[k] = v
+            end
+            print("[SkinEditor] nameLabel applied: fontSize=" .. tostring(Cfg.PLAYER_VISUALS.nameLabel.fontSize)
+                .. " offsetY=" .. tostring(Cfg.PLAYER_VISUALS.nameLabel.offsetY))
+        end
+    else
+        print("[SkinEditor] WARNING: no playerVisuals in json data")
+    end
+
     return {
         playerScale = data.playerScale or default.playerScale,
         capsuleRadius = data.capsuleRadius or default.capsuleRadius,
@@ -214,6 +231,9 @@ local lobby_ = {
 
 -- 分队展示状态
 local teamReveal_ = { timer = 0, duration = 3.5 }
+
+-- 横幅状态
+local teamBanner_ = { timer = 0, duration = 2.4 }
 
 -- 公告板状态
 local bulletin_ = {
@@ -478,9 +498,23 @@ function Start()
     SubscribeToEvent("PhysicsUpdateContact2D", "HandleUpdateContact")
     SubscribeToEvent("MouseButtonDown", "HandleMouseDown")
 
-    gameState_ = "lobby"
-    print("=== Photo Rush 团队抓拍游戏启动 ===")
-    print("按跳跃键加入: W / S / X / I / K / M / 8 / ↑")
+    -- 显示主界面（标题屏幕）
+    gameState_ = "title"
+    local titleRoot = TitleScreen.Create(function()
+        -- 主界面结束后进入大厅
+        gameState_ = "lobby"
+        print("=== Photo Rush 团队抓拍游戏启动 ===")
+        print("按跳跃键加入: W / S / X / I / K / M / 8 / ↑")
+        -- 播放淡入转场（竖条百叶窗收起）
+        local uiRoot = UI.FindById("root")
+        if uiRoot then
+            TitleScreen.PlayFadeIn(uiRoot)
+        end
+    end)
+    local uiRoot = UI.FindById("root")
+    if uiRoot and titleRoot then
+        uiRoot:AddChild(titleRoot)
+    end
 end
 
 --- 解析 transform 字段
@@ -1105,6 +1139,12 @@ function HandleUpdate(eventType, eventData)
     screenW_ = graphics:GetWidth()
     screenH_ = graphics:GetHeight()
 
+    -- 主界面状态：仅处理输入（动画由 UI 内置系统自动驱动）
+    if gameState_ == "title" then
+        TitleScreen.HandleInput()
+        return
+    end
+
     -- Contain 策略
     if not cameraZoomed_ then
         local camera = cameraNode_:GetComponent("Camera")
@@ -1146,6 +1186,12 @@ function HandleUpdate(eventType, eventData)
     -- 分队展示
     if gameState_ == "team_reveal" then
         UpdateTeamReveal(dt)
+        return
+    end
+
+    -- 横幅展示
+    if gameState_ == "team_banner" then
+        UpdateTeamBanner(dt)
         return
     end
 
@@ -2386,10 +2432,18 @@ function HandleNanoVGRender(eventType, eventData)
 
     nvgBeginFrame(nvg_, screenW_, screenH_, 1.0)
 
+    -- 主界面状态：不需要 NanoVG 绘制（纯 UI 实现）
+    if gameState_ == "title" then
+        nvgEndFrame(nvg_)
+        return
+    end
+
     if gameState_ == "lobby" then
         DrawLobby()
     elseif gameState_ == "team_reveal" then
         DrawTeamReveal()
+    elseif gameState_ == "team_banner" then
+        DrawTeamBanner()
     else
         -- 镜头翻转：整屏旋转
         if cameraFlipAngle_ ~= 0 then
@@ -2477,7 +2531,7 @@ function DrawLobby()
         })
     end
 
-    -- === 4. 左上角小槽位面板 ===
+    -- === 4. 左上角小槽位面板（粉青可爱风） ===
     local cols = 4
     local slotW = sw * 0.065
     local slotH = sh * 0.13
@@ -2486,15 +2540,15 @@ function DrawLobby()
     local panelW = cols * slotW + (cols - 1) * gap + panelPad * 2
     local panelH = 2 * slotH + gap + panelPad * 2
 
-    -- 面板背景（半透明）
+    -- 面板背景（白色半透明 + 粉色圆角边框）
     nvgBeginPath(nvg)
-    nvgRoundedRect(nvg, 4, 4, panelW, panelH, 10)
-    nvgFillColor(nvg, nvgRGBA(10, 12, 20, 180))
+    nvgRoundedRect(nvg, 4, 4, panelW, panelH, 14)
+    nvgFillColor(nvg, nvgRGBA(255, 245, 250, 210))
     nvgFill(nvg)
     nvgBeginPath(nvg)
-    nvgRoundedRect(nvg, 4, 4, panelW, panelH, 10)
-    nvgStrokeColor(nvg, nvgRGBA(80, 100, 140, 120))
-    nvgStrokeWidth(nvg, 1.5)
+    nvgRoundedRect(nvg, 4, 4, panelW, panelH, 14)
+    nvgStrokeColor(nvg, nvgRGBA(240, 100, 130, 160))
+    nvgStrokeWidth(nvg, 2.5)
     nvgStroke(nvg)
 
     lobby_.xButtonRects = {}  -- 每帧重置碰撞矩形
@@ -2507,30 +2561,30 @@ function DrawLobby()
         local pdata = PLAYERS[i]
         local c = pdata.color
 
-        -- 槽位背景
+        -- 槽位背景（白色卡片风格）
         nvgBeginPath(nvg)
-        nvgRoundedRect(nvg, sx, sy, slotW, slotH, 6)
+        nvgRoundedRect(nvg, sx, sy, slotW, slotH, 8)
         if slot.ready then
-            nvgFillColor(nvg, nvgRGBA(c[1], c[2], c[3], 50))
+            nvgFillColor(nvg, nvgRGBA(220, 255, 235, 230))
         elseif slot.joined then
-            nvgFillColor(nvg, nvgRGBA(c[1], c[2], c[3], 30))
+            nvgFillColor(nvg, nvgRGBA(255, 255, 255, 200))
         else
-            nvgFillColor(nvg, nvgRGBA(30, 30, 40, 160))
+            nvgFillColor(nvg, nvgRGBA(240, 235, 245, 140))
         end
         nvgFill(nvg)
 
-        -- 边框
+        -- 边框（柔和彩色）
         nvgBeginPath(nvg)
-        nvgRoundedRect(nvg, sx, sy, slotW, slotH, 6)
+        nvgRoundedRect(nvg, sx, sy, slotW, slotH, 8)
         if slot.ready then
-            nvgStrokeColor(nvg, nvgRGBA(80, 255, 120, 220))
-            nvgStrokeWidth(nvg, 2)
+            nvgStrokeColor(nvg, nvgRGBA(100, 220, 160, 240))
+            nvgStrokeWidth(nvg, 2.5)
         elseif slot.joined then
-            nvgStrokeColor(nvg, nvgRGBA(c[1], c[2], c[3], 180))
-            nvgStrokeWidth(nvg, 1.5)
+            nvgStrokeColor(nvg, nvgRGBA(c[1], c[2], c[3], 200))
+            nvgStrokeWidth(nvg, 2)
         else
-            nvgStrokeColor(nvg, nvgRGBA(60, 60, 80, 120))
-            nvgStrokeWidth(nvg, 1)
+            nvgStrokeColor(nvg, nvgRGBA(200, 180, 220, 100))
+            nvgStrokeWidth(nvg, 1.5)
         end
         nvgStroke(nvg)
 
@@ -2834,24 +2888,28 @@ function DrawTeamReveal()
         nvgStrokeWidth(nvg, 2)
         nvgStroke(nvg)
 
-        -- 角色立绘
-        local skin = p.skin
+        -- 角色立绘（通过 skinIndex 获取皮肤）
+        local skinIdx = p.config.skinIndex or 1
+        local skin = skinsRuntime_[skinIdx]
         if skin then
+            -- 呼吸动画：轻微缩放脉动
+            local breathe = 1.0 + math.sin(teamReveal_.timer * 2.5 + pi * 1.3) * 0.03
+            local baseScale = 1.8
             Render.DrawSinglePlayer({
                 sx = cx - cardW * 0.2,
-                sy = cy + cardH * 0.45,
+                sy = cy + cardH * 0.5,
                 color = p.config.color,
                 skin = skin,
                 facing = 1,
-                limbSwing = math.sin(teamReveal_.timer * 3 + pi) * 0.2,
-                armSwing = -math.sin(teamReveal_.timer * 3 + pi) * 0.15,
+                limbSwing = math.sin(teamReveal_.timer * 2.0 + pi) * 0.1,
+                armSwing = -math.sin(teamReveal_.timer * 2.0 + pi) * 0.08,
                 inAir = false,
                 isMoving = false,
                 onGround = true,
                 velY = 0,
                 name = "",
-                scaleX = 1.8,
-                scaleY = 1.8,
+                scaleX = baseScale * breathe,
+                scaleY = baseScale * breathe,
             })
         end
 
@@ -2883,24 +2941,28 @@ function DrawTeamReveal()
         nvgStrokeWidth(nvg, 2)
         nvgStroke(nvg)
 
-        -- 角色立绘
-        local skin = p.skin
+        -- 角色立绘（通过 skinIndex 获取皮肤）
+        local skinIdx = p.config.skinIndex or 1
+        local skin = skinsRuntime_[skinIdx]
         if skin then
+            -- 呼吸动画：轻微缩放脉动
+            local breathe = 1.0 + math.sin(teamReveal_.timer * 2.5 + pi * 1.7) * 0.03
+            local baseScale = 1.8
             Render.DrawSinglePlayer({
                 sx = cx + cardW * 0.2,
-                sy = cy + cardH * 0.45,
+                sy = cy + cardH * 0.5,
                 color = p.config.color,
                 skin = skin,
                 facing = -1,
-                limbSwing = math.sin(teamReveal_.timer * 3 + pi) * 0.2,
-                armSwing = -math.sin(teamReveal_.timer * 3 + pi) * 0.15,
+                limbSwing = math.sin(teamReveal_.timer * 2.0 + pi) * 0.1,
+                armSwing = -math.sin(teamReveal_.timer * 2.0 + pi) * 0.08,
                 inAir = false,
                 isMoving = false,
                 onGround = true,
                 velY = 0,
                 name = "",
-                scaleX = 1.8,
-                scaleY = 1.8,
+                scaleX = baseScale * breathe,
+                scaleY = baseScale * breathe,
             })
         end
 
@@ -2924,7 +2986,89 @@ end
 function UpdateTeamReveal(dt)
     teamReveal_.timer = teamReveal_.timer + dt
     if teamReveal_.timer >= teamReveal_.duration then
-        -- 分队展示结束，进入公告板
+        -- 分队展示结束，进入横幅
+        teamBanner_.timer = 0
+        gameState_ = "team_banner"
+        print("=== 进入横幅展示 ===")
+    end
+end
+
+-- ============================================================================
+-- 横幅动画（team_banner）
+-- ============================================================================
+function DrawTeamBanner()
+    local nvg = nvg_
+    local sw, sh = screenW_, screenH_
+
+    -- 背景（与 team_reveal 一致的深色）
+    nvgBeginPath(nvg)
+    nvgRect(nvg, 0, 0, sw, sh)
+    local bg = nvgLinearGradient(nvg, 0, 0, 0, sh,
+        nvgRGBA(15, 20, 40, 255), nvgRGBA(5, 8, 20, 255))
+    nvgFillPaint(nvg, bg)
+    nvgFill(nvg)
+
+    -- 横幅动画参数
+    local t = teamBanner_.timer
+    local dur = teamBanner_.duration
+    local slideIn = 0.4    -- 飘入时间
+    local pauseEnd = dur - 0.5  -- 飘出开始时间
+    local slideOut = 0.5   -- 飘出时间
+
+    -- 计算横幅 X 位置
+    local bannerX
+    if t < slideIn then
+        -- 从左侧飘入中间
+        local p = t / slideIn
+        -- 缓入效果 (easeOutCubic)
+        p = 1 - (1 - p) * (1 - p) * (1 - p)
+        bannerX = -sw * 0.5 + (sw * 0.5) * p  -- 从 -sw/2 到 0（中心偏移）
+    elseif t < pauseEnd then
+        -- 停在中间
+        bannerX = 0
+    else
+        -- 飘出到右侧
+        local p = (t - pauseEnd) / slideOut
+        -- 缓出效果 (easeInCubic)
+        p = p * p * p
+        bannerX = sw * 0.5 * p  -- 从 0 到 sw/2
+    end
+
+    -- 横幅本体
+    local bannerH = 70
+    local bannerY = sh / 2 - bannerH / 2
+    local centerX = sw / 2 + bannerX
+
+    -- 横幅背景条
+    nvgBeginPath(nvg)
+    nvgRect(nvg, centerX - sw * 0.45, bannerY, sw * 0.9, bannerH)
+    nvgFillColor(nvg, nvgRGBA(20, 20, 40, 230))
+    nvgFill(nvg)
+
+    -- 上下金色边线
+    nvgBeginPath(nvg)
+    nvgRect(nvg, centerX - sw * 0.45, bannerY, sw * 0.9, 3)
+    nvgFillColor(nvg, nvgRGBA(255, 200, 60, 220))
+    nvgFill(nvg)
+    nvgBeginPath(nvg)
+    nvgRect(nvg, centerX - sw * 0.45, bannerY + bannerH - 3, sw * 0.9, 3)
+    nvgFillColor(nvg, nvgRGBA(255, 200, 60, 220))
+    nvgFill(nvg)
+
+    -- 横幅文字
+    local winScore = GetWinScore()
+    local text = "率先达到 " .. winScore .. " 分的队伍获得胜利"
+    nvgFontSize(nvg, 28)
+    nvgFontFace(nvg, "sans")
+    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg, nvgRGBA(255, 220, 80, 255))
+    nvgText(nvg, centerX, bannerY + bannerH / 2, text, nil)
+end
+
+function UpdateTeamBanner(dt)
+    teamBanner_.timer = teamBanner_.timer + dt
+    if teamBanner_.timer >= teamBanner_.duration then
+        -- 横幅结束，进入公告板
         bulletin_.round = 1
         bulletin_.confirmed = {}
         for i = 1, #players_ do
@@ -2936,7 +3080,7 @@ function UpdateTeamReveal(dt)
 
         unlock_.currentGameplayIndex = 1
         CheckUnlockAndPrepareRound()
-        print("=== 分队展示结束，进入游戏 ===")
+        print("=== 横幅结束，进入游戏 ===")
     end
 end
 
