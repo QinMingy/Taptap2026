@@ -1102,33 +1102,187 @@ function M.DrawTugScores()
     local clicks = G.tugTeamClicks
     if not clicks then return end
 
-    -- 屏幕底部居中显示（两队之间）：左队点击数 VS 右队点击数
-    local centerY = sh - 80
-    local vsGap = 80  -- VS 左右文字间距
+    local t = G.globalTime or 0
+    local c1 = clicks[1] or 0
+    local c2 = clicks[2] or 0
+    local total = c1 + c2
+    local t1c = G.teams[1].color
+    local t2c = G.teams[2].color
 
-    -- "VS" 中央
-    nvgFontSize(nvg, 22)
+    -- === 数字缩放：随点击数疯狂变大，上限 4.5x ===
+    local baseSize = 58
+    local scale1 = math.min(1.0 + c1 * 0.018, 4.5)
+    local scale2 = math.min(1.0 + c2 * 0.018, 4.5)
+
+    -- === 大方压小方：赢家侧向中间挤压，输家被推开 ===
+    local baseGap = 110
+    local pushAmount = 0  -- 正值=左队占优向右推，负值=右队占优向左推
+    if total > 0 then
+        local ratio = (c1 - c2) / math.max(total, 1)  -- -1 ~ +1
+        pushAmount = ratio * 100  -- 最大偏移 100px，压迫感更强
+    end
+
+    local centerY = sh - 100
+    local leftX = sw / 2 - baseGap + pushAmount
+    local rightX = sw / 2 + baseGap + pushAmount
+
+    -- === 抖动：基于 globalTime 的高频 sin/cos 组合，越大越疯狂 ===
+    local shake1X = math.sin(t * 47.0 + 1.7) * 3.5 + math.cos(t * 67.0) * 2.5 + math.sin(t * 97.0) * 1.5
+    local shake1Y = math.cos(t * 53.0 + 0.3) * 3.0 + math.sin(t * 73.0) * 2.0 + math.cos(t * 101.0) * 1.2
+    local shake2X = math.sin(t * 51.0 + 3.1) * 3.5 + math.cos(t * 71.0) * 2.5 + math.sin(t * 89.0) * 1.5
+    local shake2Y = math.cos(t * 43.0 + 2.1) * 3.0 + math.sin(t * 79.0) * 2.0 + math.cos(t * 103.0) * 1.2
+    -- 点击越多抖动越疯狂（上限更高）
+    local shakeIntensity1 = math.min(1.0 + c1 * 0.04, 6.0)
+    local shakeIntensity2 = math.min(1.0 + c2 * 0.04, 6.0)
+    shake1X = shake1X * shakeIntensity1
+    shake1Y = shake1Y * shakeIntensity1
+    shake2X = shake2X * shakeIntensity2
+    shake2Y = shake2Y * shakeIntensity2
+
+    -- === "VS" 中央文字 ===
+    nvgFontSize(nvg, 26)
     nvgFontFace(nvg, "sans")
     nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(nvg, nvgRGBA(255, 255, 255, 200))
-    nvgText(nvg, sw / 2, centerY, "VS", nil)
+    nvgFillColor(nvg, nvgRGBA(255, 255, 255, 220))
+    nvgText(nvg, sw / 2 + pushAmount * 0.3, centerY, "VS", nil)
 
-    -- 左队点击数
-    local t1c = G.teams[1].color
-    nvgFontSize(nvg, 48)
-    nvgTextAlign(nvg, NVG_ALIGN_RIGHT + NVG_ALIGN_MIDDLE)
-    nvgFillColor(nvg, nvgRGBA(0, 0, 0, 120))
-    nvgText(nvg, sw / 2 - vsGap + 2, centerY + 2, tostring(clicks[1]), nil)
+    -- === 左队数字（加粗 + 描边 + 缩放 + 抖动） ===
+    local fontSize1 = math.floor(baseSize * scale1)
+    local numX1 = leftX + shake1X
+    local numY1 = centerY + shake1Y
+
+    nvgFontSize(nvg, fontSize1)
+    nvgFontFace(nvg, "sans")
+    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    -- 描边（黑色粗边）
+    nvgStrokeColor(nvg, nvgRGBA(0, 0, 0, 220))
+    nvgStrokeWidth(nvg, 4 + scale1)
+    nvgFillColor(nvg, nvgRGBA(0, 0, 0, 220))
+    -- 多偏移模拟粗描边
+    for ox = -2, 2 do
+        for oy = -2, 2 do
+            if ox ~= 0 or oy ~= 0 then
+                nvgText(nvg, numX1 + ox, numY1 + oy, tostring(c1), nil)
+            end
+        end
+    end
+    -- 主体填充（队伍颜色）
     nvgFillColor(nvg, nvgRGBA(t1c[1], t1c[2], t1c[3], 255))
-    nvgText(nvg, sw / 2 - vsGap, centerY, tostring(clicks[1]), nil)
+    nvgText(nvg, numX1, numY1, tostring(c1), nil)
+    -- 高光
+    nvgFillColor(nvg, nvgRGBA(255, 255, 255, 80))
+    nvgText(nvg, numX1, numY1 - 1, tostring(c1), nil)
 
-    -- 右队点击数
-    local t2c = G.teams[2].color
-    nvgTextAlign(nvg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
-    nvgFillColor(nvg, nvgRGBA(0, 0, 0, 120))
-    nvgText(nvg, sw / 2 + vsGap + 2, centerY + 2, tostring(clicks[2]), nil)
+    -- === 右队数字（加粗 + 描边 + 缩放 + 抖动） ===
+    local fontSize2 = math.floor(baseSize * scale2)
+    local numX2 = rightX + shake2X
+    local numY2 = centerY + shake2Y
+
+    nvgFontSize(nvg, fontSize2)
+    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    -- 描边
+    nvgFillColor(nvg, nvgRGBA(0, 0, 0, 220))
+    for ox = -2, 2 do
+        for oy = -2, 2 do
+            if ox ~= 0 or oy ~= 0 then
+                nvgText(nvg, numX2 + ox, numY2 + oy, tostring(c2), nil)
+            end
+        end
+    end
+    -- 主体填充（队伍颜色）
     nvgFillColor(nvg, nvgRGBA(t2c[1], t2c[2], t2c[3], 255))
-    nvgText(nvg, sw / 2 + vsGap, centerY, tostring(clicks[2]), nil)
+    nvgText(nvg, numX2, numY2, tostring(c2), nil)
+    -- 高光
+    nvgFillColor(nvg, nvgRGBA(255, 255, 255, 80))
+    nvgText(nvg, numX2, numY2 - 1, tostring(c2), nil)
+
+    -- === 按钮：两个被疯狂按动的大按钮，位于数字下方 ===
+    local btnW = 90
+    local btnH = 50
+    local btnY = centerY + math.max(fontSize1, fontSize2) * 0.5 + 20
+    local btnRadius = 12
+
+    -- 按钮按压动画：利用点击数的快速变化模拟弹跳
+    -- 使用 sin 高频模拟被快速按下的感觉
+    local press1 = math.abs(math.sin(t * 25.0 + c1 * 0.7)) * 0.3
+    local press2 = math.abs(math.sin(t * 28.0 + c2 * 0.9)) * 0.3
+    -- 如果点击数为 0，按钮静止
+    if c1 == 0 then press1 = 0 end
+    if c2 == 0 then press2 = 0 end
+
+    local pressDepth1 = press1 * 6  -- 按下深度（像素）
+    local pressDepth2 = press2 * 6
+
+    -- 左队按钮
+    local btn1X = leftX - btnW / 2
+    local btn1Y = btnY + pressDepth1
+    -- 按钮阴影（未按下时有阴影，按下时阴影缩小）
+    local shadowOff1 = math.floor(6 - pressDepth1)
+    if shadowOff1 > 0 then
+        nvgBeginPath(nvg)
+        nvgRoundedRect(nvg, btn1X, btn1Y + shadowOff1, btnW, btnH, btnRadius)
+        nvgFillColor(nvg, nvgRGBA(0, 0, 0, 80))
+        nvgFill(nvg)
+    end
+    -- 按钮底色（深色）
+    nvgBeginPath(nvg)
+    nvgRoundedRect(nvg, btn1X, btn1Y, btnW, btnH, btnRadius)
+    local darken1 = math.floor(40 + pressDepth1 * 8)
+    nvgFillColor(nvg, nvgRGBA(
+        math.max(0, t1c[1] - darken1),
+        math.max(0, t1c[2] - darken1),
+        math.max(0, t1c[3] - darken1), 255))
+    nvgFill(nvg)
+    -- 按钮顶面（亮色，按下时偏移减少）
+    local topOff1 = math.floor(4 - pressDepth1 * 0.7)
+    if topOff1 < 0 then topOff1 = 0 end
+    nvgBeginPath(nvg)
+    nvgRoundedRect(nvg, btn1X, btn1Y - topOff1, btnW, btnH - 4, btnRadius)
+    nvgFillColor(nvg, nvgRGBA(t1c[1], t1c[2], t1c[3], 255))
+    nvgFill(nvg)
+    -- 按钮高光
+    nvgBeginPath(nvg)
+    nvgRoundedRect(nvg, btn1X + 4, btn1Y - topOff1 + 3, btnW - 8, btnH * 0.35, btnRadius - 2)
+    nvgFillColor(nvg, nvgRGBA(255, 255, 255, 60 - math.floor(pressDepth1 * 8)))
+    nvgFill(nvg)
+    -- 按钮文字
+    nvgFontSize(nvg, 18)
+    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg, nvgRGBA(255, 255, 255, 240))
+    nvgText(nvg, btn1X + btnW / 2, btn1Y - topOff1 + (btnH - 4) / 2, "SMASH!", nil)
+
+    -- 右队按钮
+    local btn2X = rightX - btnW / 2
+    local btn2Y = btnY + pressDepth2
+    local shadowOff2 = math.floor(6 - pressDepth2)
+    if shadowOff2 > 0 then
+        nvgBeginPath(nvg)
+        nvgRoundedRect(nvg, btn2X, btn2Y + shadowOff2, btnW, btnH, btnRadius)
+        nvgFillColor(nvg, nvgRGBA(0, 0, 0, 80))
+        nvgFill(nvg)
+    end
+    nvgBeginPath(nvg)
+    nvgRoundedRect(nvg, btn2X, btn2Y, btnW, btnH, btnRadius)
+    local darken2 = math.floor(40 + pressDepth2 * 8)
+    nvgFillColor(nvg, nvgRGBA(
+        math.max(0, t2c[1] - darken2),
+        math.max(0, t2c[2] - darken2),
+        math.max(0, t2c[3] - darken2), 255))
+    nvgFill(nvg)
+    local topOff2 = math.floor(4 - pressDepth2 * 0.7)
+    if topOff2 < 0 then topOff2 = 0 end
+    nvgBeginPath(nvg)
+    nvgRoundedRect(nvg, btn2X, btn2Y - topOff2, btnW, btnH - 4, btnRadius)
+    nvgFillColor(nvg, nvgRGBA(t2c[1], t2c[2], t2c[3], 255))
+    nvgFill(nvg)
+    nvgBeginPath(nvg)
+    nvgRoundedRect(nvg, btn2X + 4, btn2Y - topOff2 + 3, btnW - 8, btnH * 0.35, btnRadius - 2)
+    nvgFillColor(nvg, nvgRGBA(255, 255, 255, 60 - math.floor(pressDepth2 * 8)))
+    nvgFill(nvg)
+    nvgFontSize(nvg, 18)
+    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg, nvgRGBA(255, 255, 255, 240))
+    nvgText(nvg, btn2X + btnW / 2, btn2Y - topOff2 + (btnH - 4) / 2, "SMASH!", nil)
 end
 
 function M.DrawFlashEffect()
@@ -1934,20 +2088,160 @@ function M.DrawGameOver()
     local nvg = G.nvg
     local sw, sh = G.screenW, G.screenH
 
+    -- 半透明遮罩
     nvgBeginPath(nvg)
     nvgRect(nvg, 0, 0, sw, sh)
-    nvgFillColor(nvg, nvgRGBA(0, 0, 0, 180))
+    nvgFillColor(nvg, nvgRGBA(20, 10, 30, 200))
     nvgFill(nvg)
 
-    nvgFontSize(nvg, 56)
+    -- 找出获胜队伍
+    local winTeam = nil
+    local loseTeam = nil
+    for i = 1, 2 do
+        if G.teams[i].name == G.winner then
+            winTeam = G.teams[i]
+            loseTeam = G.teams[3 - i]
+        end
+    end
+    if not winTeam then return end
+
+    local wc = winTeam.color
+
+    -- === 中央结算卡片背景 ===
+    local cardW = sw * 0.52
+    local cardH = sh * 0.7
+    local cardX = (sw - cardW) / 2
+    local cardY = (sh - cardH) / 2
+
+    -- 卡片白色圆角背景
+    nvgBeginPath(nvg)
+    nvgRoundedRect(nvg, cardX, cardY, cardW, cardH, 18)
+    nvgFillColor(nvg, nvgRGBA(255, 250, 253, 235))
+    nvgFill(nvg)
+    -- 卡片边框（获胜队颜色）
+    nvgBeginPath(nvg)
+    nvgRoundedRect(nvg, cardX, cardY, cardW, cardH, 18)
+    nvgStrokeColor(nvg, nvgRGBA(wc[1], wc[2], wc[3], 200))
+    nvgStrokeWidth(nvg, 3)
+    nvgStroke(nvg)
+
+    -- === 顶部：队伍名 WIN! ===
+    local titleY = cardY + 50
+    nvgFontSize(nvg, 48)
     nvgFontFace(nvg, "sans")
     nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(nvg, nvgRGBA(255, 220, 50, 255))
-    nvgText(nvg, sw/2, sh/2 - 30, G.winner .. " 获胜!", nil)
+    nvgFillColor(nvg, nvgRGBA(wc[1], wc[2], wc[3], 255))
+    nvgText(nvg, sw / 2, titleY, winTeam.name .. " WIN!", nil)
 
-    nvgFontSize(nvg, 24)
-    nvgFillColor(nvg, nvgRGBA(200, 200, 200, 255))
-    nvgText(nvg, sw/2, sh/2 + 30, "按 R 重新开始", nil)
+    -- 装饰小星星
+    nvgFontSize(nvg, 20)
+    nvgText(nvg, sw / 2 - 100, titleY, "★", nil)
+    nvgText(nvg, sw / 2 + 100, titleY, "★", nil)
+
+    -- === 分隔线 ===
+    local divY = titleY + 35
+    nvgBeginPath(nvg)
+    nvgMoveTo(nvg, cardX + 30, divY)
+    nvgLineTo(nvg, cardX + cardW - 30, divY)
+    nvgStrokeColor(nvg, nvgRGBA(wc[1], wc[2], wc[3], 80))
+    nvgStrokeWidth(nvg, 1.5)
+    nvgStroke(nvg)
+
+    -- === 双列玩家分数 ===
+    -- 收集并排序玩家分数
+    local leftPlayers = {}   -- 获胜队
+    local rightPlayers = {}  -- 失败队
+
+    for i, p in ipairs(G.players) do
+        local entry = { name = p.config.name, score = p.score or 0, color = p.config.color }
+        local inWinTeam = false
+        for _, mi in ipairs(winTeam.members) do
+            if mi == i then inWinTeam = true; break end
+        end
+        if inWinTeam then
+            table.insert(leftPlayers, entry)
+        else
+            table.insert(rightPlayers, entry)
+        end
+    end
+
+    -- 按分数从高到低排序
+    table.sort(leftPlayers, function(a, b) return a.score > b.score end)
+    table.sort(rightPlayers, function(a, b) return a.score > b.score end)
+
+    -- 列布局参数
+    local colStartY = divY + 25
+    local rowH = 32
+    local leftColX = cardX + 30
+    local rightColX = sw / 2 + 15
+    local colW = cardW / 2 - 45
+
+    -- 左列标题（获胜队）
+    nvgFontSize(nvg, 16)
+    nvgFontFace(nvg, "sans")
+    nvgTextAlign(nvg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg, nvgRGBA(wc[1], wc[2], wc[3], 220))
+    nvgText(nvg, leftColX, colStartY, winTeam.name, nil)
+    nvgTextAlign(nvg, NVG_ALIGN_RIGHT + NVG_ALIGN_MIDDLE)
+    nvgText(nvg, leftColX + colW, colStartY, "得分", nil)
+
+    -- 右列标题（失败队）
+    local lc = loseTeam.color
+    nvgTextAlign(nvg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg, nvgRGBA(lc[1], lc[2], lc[3], 220))
+    nvgText(nvg, rightColX, colStartY, loseTeam.name, nil)
+    nvgTextAlign(nvg, NVG_ALIGN_RIGHT + NVG_ALIGN_MIDDLE)
+    nvgText(nvg, rightColX + colW, colStartY, "得分", nil)
+
+    -- 左列玩家行
+    for idx, entry in ipairs(leftPlayers) do
+        local y = colStartY + idx * rowH
+        local ec = entry.color
+        -- 圆形标识
+        nvgBeginPath(nvg)
+        nvgCircle(nvg, leftColX + 5, y, 5)
+        nvgFillColor(nvg, nvgRGBA(ec[1], ec[2], ec[3], 220))
+        nvgFill(nvg)
+        -- 玩家名
+        nvgFontSize(nvg, 15)
+        nvgTextAlign(nvg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+        nvgFillColor(nvg, nvgRGBA(80, 60, 100, 240))
+        nvgText(nvg, leftColX + 16, y, entry.name, nil)
+        -- 分数
+        nvgTextAlign(nvg, NVG_ALIGN_RIGHT + NVG_ALIGN_MIDDLE)
+        nvgFillColor(nvg, nvgRGBA(wc[1], wc[2], wc[3], 255))
+        nvgFontSize(nvg, 17)
+        nvgText(nvg, leftColX + colW, y, tostring(entry.score), nil)
+    end
+
+    -- 右列玩家行
+    for idx, entry in ipairs(rightPlayers) do
+        local y = colStartY + idx * rowH
+        local ec = entry.color
+        -- 圆形标识
+        nvgBeginPath(nvg)
+        nvgCircle(nvg, rightColX + 5, y, 5)
+        nvgFillColor(nvg, nvgRGBA(ec[1], ec[2], ec[3], 220))
+        nvgFill(nvg)
+        -- 玩家名
+        nvgFontSize(nvg, 15)
+        nvgTextAlign(nvg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+        nvgFillColor(nvg, nvgRGBA(80, 60, 100, 240))
+        nvgText(nvg, rightColX + 16, y, entry.name, nil)
+        -- 分数
+        nvgTextAlign(nvg, NVG_ALIGN_RIGHT + NVG_ALIGN_MIDDLE)
+        nvgFillColor(nvg, nvgRGBA(lc[1], lc[2], lc[3], 255))
+        nvgFontSize(nvg, 17)
+        nvgText(nvg, rightColX + colW, y, tostring(entry.score), nil)
+    end
+
+    -- === 底部提示 ===
+    local bottomY = cardY + cardH - 30
+    nvgFontSize(nvg, 16)
+    nvgFontFace(nvg, "sans")
+    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg, nvgRGBA(140, 120, 160, 200))
+    nvgText(nvg, sw / 2, bottomY, "按 R 重新开始", nil)
 end
 
 -- ============================================================================

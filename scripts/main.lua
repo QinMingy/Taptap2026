@@ -916,48 +916,49 @@ function CreateTeamUI()
     local t1c = teams_[1].color
     local t2c = teams_[2].color
 
-    -- 像素风格颜色
-    local pixelBg = {20, 20, 30, 200}          -- 深色半透明背景
-    local pixelBorder1 = {t1c[1], t1c[2], t1c[3], 220}  -- 蓝队边框
-    local pixelBorder2 = {t2c[1], t2c[2], t2c[3], 220}  -- 红队边框
+    -- 可爱风格颜色（白底+柔和团队色边框）
+    local cuteBg1 = {255, 245, 250, 220}       -- 浅粉白背景（左队）
+    local cuteBg2 = {245, 250, 255, 220}       -- 浅蓝白背景（右队）
+    local cuteBorder1 = {t1c[1], t1c[2], t1c[3], 180}  -- 队伍色边框
+    local cuteBorder2 = {t2c[1], t2c[2], t2c[3], 180}
 
-    -- 构建左队（蓝队）成员行
+    -- 构建左队成员行
     local t1MemberRows = {}
     for _, pi in ipairs(teams_[1].members) do
         local pdata = PLAYERS[pi]
         table.insert(t1MemberRows, UI.Panel {
             flexDirection = "row", alignItems = "center", gap = 6,
             children = {
-                -- 像素方块标识（不用圆形）
-                UI.Panel { width = 12, height = 12, borderRadius = 0, backgroundColor = pdata.color },
-                UI.Label { text = pdata.name, fontSize = 13, fontColor = {200, 210, 230, 255} },
-                UI.Label { id = "score" .. pi, text = "0", fontSize = 15, fontColor = {255, 255, 255, 255}, fontWeight = "bold" },
+                -- 圆形标识
+                UI.Panel { width = 10, height = 10, borderRadius = 5, backgroundColor = pdata.color },
+                UI.Label { text = pdata.name, fontSize = 13, fontColor = {80, 60, 100, 255} },
+                UI.Label { id = "score" .. pi, text = "0", fontSize = 15, fontColor = {t1c[1], t1c[2], t1c[3], 255}, fontWeight = "bold" },
             }
         })
     end
 
-    -- 构建右队（红队）成员行
+    -- 构建右队成员行
     local t2MemberRows = {}
     for _, pi in ipairs(teams_[2].members) do
         local pdata = PLAYERS[pi]
         table.insert(t2MemberRows, UI.Panel {
             flexDirection = "row", alignItems = "center", justifyContent = "flex-end", gap = 6,
             children = {
-                UI.Label { id = "score" .. pi, text = "0", fontSize = 15, fontColor = {255, 255, 255, 255}, fontWeight = "bold" },
-                UI.Label { text = pdata.name, fontSize = 13, fontColor = {230, 210, 200, 255} },
-                UI.Panel { width = 12, height = 12, borderRadius = 0, backgroundColor = pdata.color },
+                UI.Label { id = "score" .. pi, text = "0", fontSize = 15, fontColor = {t2c[1], t2c[2], t2c[3], 255}, fontWeight = "bold" },
+                UI.Label { text = pdata.name, fontSize = 13, fontColor = {100, 60, 80, 255} },
+                UI.Panel { width = 10, height = 10, borderRadius = 5, backgroundColor = pdata.color },
             }
         })
     end
 
-    -- 左队面板
+    -- 左队面板（圆角白底 + 柔和边框）
     local t1Panel = UI.Panel {
         id = "team1Panel",
         position = "absolute",
         top = 10, left = 10,
         padding = 10, gap = 5,
-        backgroundColor = pixelBg,
-        borderWidth = 3, borderColor = pixelBorder1, borderRadius = 0,
+        backgroundColor = cuteBg1,
+        borderWidth = 2.5, borderColor = cuteBorder1, borderRadius = 12,
         pointerEvents = "none",
         children = {
             -- 队伍标题行
@@ -965,12 +966,12 @@ function CreateTeamUI()
                 flexDirection = "row", alignItems = "center", gap = 6,
                 marginBottom = 4,
                 children = {
-                    UI.Panel { width = 8, height = 8, borderRadius = 0, backgroundColor = t1c },
+                    UI.Panel { width = 8, height = 8, borderRadius = 4, backgroundColor = t1c },
                     UI.Label {
                         id = "team1Score",
                         text = teams_[1].name .. " 0/" .. winScore,
                         fontSize = 16,
-                        fontColor = t1c,
+                        fontColor = {t1c[1], t1c[2], t1c[3], 255},
                         fontWeight = "bold",
                     },
                 }
@@ -979,15 +980,15 @@ function CreateTeamUI()
         }
     }
 
-    -- 右队面板
+    -- 右队面板（圆角白底 + 柔和边框）
     local t2Panel = UI.Panel {
         id = "team2Panel",
         position = "absolute",
         top = 10, right = 10,
         padding = 10, gap = 5,
         alignItems = "flex-end",
-        backgroundColor = pixelBg,
-        borderWidth = 3, borderColor = pixelBorder2, borderRadius = 0,
+        backgroundColor = cuteBg2,
+        borderWidth = 2.5, borderColor = cuteBorder2, borderRadius = 12,
         pointerEvents = "none",
         children = {
             -- 队伍标题行
@@ -999,10 +1000,10 @@ function CreateTeamUI()
                         id = "team2Score",
                         text = teams_[2].name .. " 0/" .. winScore,
                         fontSize = 16,
-                        fontColor = t2c,
+                        fontColor = {t2c[1], t2c[2], t2c[3], 255},
                         fontWeight = "bold",
                     },
-                    UI.Panel { width = 8, height = 8, borderRadius = 0, backgroundColor = t2c },
+                    UI.Panel { width = 8, height = 8, borderRadius = 4, backgroundColor = t2c },
                 }
             },
             table.unpack(t2MemberRows),
@@ -2613,43 +2614,43 @@ function DrawLobby()
                 })
             end
 
-            -- 玩家名称（顶部）
+            -- 玩家名称（顶部，深粉紫色）
             nvgFontSize(nvg, 9)
             nvgFontFace(nvg, "sans")
             nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
-            nvgFillColor(nvg, nvgRGBA(c[1], c[2], c[3], 220))
+            nvgFillColor(nvg, nvgRGBA(140, 60, 120, 240))
             nvgText(nvg, sx + slotW / 2, sy + 2, pdata.name, nil)
 
             -- 状态（底部）
             nvgFontSize(nvg, 8)
             nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
             if slot.ready then
-                nvgFillColor(nvg, nvgRGBA(80, 255, 120, 220))
-                nvgText(nvg, sx + slotW / 2, sy + slotH - 2, "READY", nil)
+                nvgFillColor(nvg, nvgRGBA(60, 190, 130, 240))
+                nvgText(nvg, sx + slotW / 2, sy + slotH - 2, "READY ✓", nil)
             else
-                nvgFillColor(nvg, nvgRGBA(255, 220, 80, 180))
+                nvgFillColor(nvg, nvgRGBA(240, 130, 80, 200))
                 nvgText(nvg, sx + slotW / 2, sy + slotH - 2, "← →", nil)
             end
 
-            -- X 按钮（右上角）
+            -- X 按钮（右上角，圆形粉色）
             local btnSize = 14
             local bx = sx + slotW - btnSize - 2
             local by = sy + 2
             nvgBeginPath(nvg)
-            nvgRoundedRect(nvg, bx, by, btnSize, btnSize, 3)
-            nvgFillColor(nvg, nvgRGBA(180, 50, 50, 180))
+            nvgCircle(nvg, bx + btnSize / 2, by + btnSize / 2, btnSize / 2)
+            nvgFillColor(nvg, nvgRGBA(240, 100, 130, 200))
             nvgFill(nvg)
             nvgFontSize(nvg, 10)
             nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-            nvgFillColor(nvg, nvgRGBA(255, 255, 255, 220))
+            nvgFillColor(nvg, nvgRGBA(255, 255, 255, 240))
             nvgText(nvg, bx + btnSize / 2, by + btnSize / 2, "✕", nil)
             lobby_.xButtonRects[i] = { x = bx, y = by, w = btnSize, h = btnSize }
         else
-            -- 未加入：显示按键提示
+            -- 未加入：显示按键提示（柔和紫色）
             nvgFontSize(nvg, 9)
             nvgFontFace(nvg, "sans")
             nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-            nvgFillColor(nvg, nvgRGBA(100, 100, 120, 160))
+            nvgFillColor(nvg, nvgRGBA(160, 130, 180, 180))
             nvgText(nvg, sx + slotW / 2, sy + slotH / 2, GetKeyName(pdata.keys.jump), nil)
         end
     end
@@ -2669,33 +2670,33 @@ function DrawLobby()
     end
 
     if lobby_.countdownActive then
-        -- 倒数计时（大字居中）
+        -- 倒数计时（大字居中，粉色）
         local cdSec = math.ceil(lobby_.countdown)
         nvgFontSize(nvg, 72)
         nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
         local pulse = 1.0 + math.sin(lobby_.countdown * math.pi * 2) * 0.1
-        nvgFillColor(nvg, nvgRGBA(255, 255, 255, 240))
+        nvgFillColor(nvg, nvgRGBA(240, 80, 130, 250))
         nvgText(nvg, sw / 2, sh / 2, tostring(cdSec), nil)
 
         nvgFontSize(nvg, 16)
-        nvgFillColor(nvg, nvgRGBA(200, 220, 255, 200))
+        nvgFillColor(nvg, nvgRGBA(100, 200, 220, 230))
         nvgText(nvg, sw / 2, sh / 2 + 50, "全员就位！即将拍照...", nil)
     else
-        -- 提示信息
+        -- 提示信息（柔和配色）
         local hintY = sh - 40
         if joinedCount < 2 then
-            nvgFillColor(nvg, nvgRGBA(180, 200, 220, 180))
+            nvgFillColor(nvg, nvgRGBA(120, 100, 160, 200))
             nvgText(nvg, sw / 2, hintY, "按跳跃键加入 → 选皮肤(左右键) → 再按跳跃确认落下", nil)
         elseif joinedCount ~= readyCount then
-            nvgFillColor(nvg, nvgRGBA(255, 220, 80, 200))
+            nvgFillColor(nvg, nvgRGBA(240, 160, 60, 220))
             nvgText(nvg, sw / 2, hintY, "等待所有人确认...", nil)
         elseif joinedCount % 2 ~= 0 then
-            -- 奇数人警告（闪烁）
+            -- 奇数人警告（闪烁粉红）
             local flashAlpha = math.floor(160 + 80 * math.sin(lobby_.warningFlash * 6))
-            nvgFillColor(nvg, nvgRGBA(255, 100, 100, flashAlpha))
+            nvgFillColor(nvg, nvgRGBA(240, 80, 100, flashAlpha))
             nvgText(nvg, sw / 2, hintY, "玩家人数需要为双数!", nil)
         else
-            nvgFillColor(nvg, nvgRGBA(180, 255, 180, 200))
+            nvgFillColor(nvg, nvgRGBA(80, 200, 160, 220))
             nvgText(nvg, sw / 2, hintY, "全员进入拍照区域开始倒数!", nil)
         end
     end
