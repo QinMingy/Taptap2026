@@ -1,0 +1,15 @@
+{
+  "skins": [
+    {
+      "name": "Nekoark",
+      "headImage": "image/Charactor/Nekoark/head_neko.png",
+      "torsoImage": "image/Charactor/Nekoark/body_neko.png",
+      "armColor": "#FFFFFFFF",
+      "handColor": "#F5D2AAFF",
+      "legColor": "#32323CFF",
+      "shoeColor": "#50505AFF",
+      "headTransform": { "scale": 1.0, "offsetX": 0, "offsetY": 0, "rotation": 0 },
+      "torsoTransform": { "scale": 1.0, "offsetX": 0, "offsetY": 0, "rotation": 0 }
+    }
+  ]
+}

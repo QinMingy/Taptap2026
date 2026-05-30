@@ -1,0 +1,20 @@
+{
+  "description": "皮肤编辑器 Transform 配置说明",
+  "fields": {
+    "headTransform": {
+      "description": "头部变换参数",
+      "scale": { "type": "number", "default": 1.0, "range": [0.2, 3.0], "step": 0.1, "description": "缩放倍率" },
+      "offsetX": { "type": "number", "default": 0, "range": [-30, 30], "step": 1, "unit": "px", "description": "水平偏移" },
+      "offsetY": { "type": "number", "default": 0, "range": [-30, 30], "step": 1, "unit": "px", "description": "垂直偏移" },
+      "rotation": { "type": "number", "default": 0, "range": [-180, 180], "step": 1, "unit": "deg", "description": "旋转角度" }
+    },
+    "torsoTransform": {
+      "description": "躯干变换参数",
+      "scale": { "type": "number", "default": 1.0, "range": [0.2, 3.0], "step": 0.1, "description": "缩放倍率" },
+      "offsetX": { "type": "number", "default": 0, "range": [-30, 30], "step": 1, "unit": "px", "description": "水平偏移" },
+      "offsetY": { "type": "number", "default": 0, "range": [-30, 30], "step": 1, "unit": "px", "description": "垂直偏移" },
+      "rotation": { "type": "number", "default": 0, "range": [-180, 180], "step": 1, "unit": "deg", "description": "旋转角度" }
+    }
+  },
+  "usage": "游戏内按 Tab 打开编辑器，调整 Slider 实时预览，点击「复制配置」将 JSON 复制到剪切板，粘贴到 docs/skins.json 对应皮肤的 headTransform / torsoTransform 字段中。"
+}

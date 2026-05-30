@@ -11,18 +11,57 @@
 require "LuaScripts/Utilities/Sample"
 local UI = require("urhox-libs/UI")
 
+
+-- ============================================================================
+-- 皮肤系统
+-- ============================================================================
+
+--- 解析 "#RRGGBBAA" 或 "#RRGGBB" 格式的颜色字符串
+local function ParseHexColor(hex)
+    hex = hex:gsub("#", "")
+    local r = tonumber(hex:sub(1, 2), 16) or 0
+    local g = tonumber(hex:sub(3, 4), 16) or 0
+    local b = tonumber(hex:sub(5, 6), 16) or 0
+    local a = 255
+    if #hex >= 8 then
+        a = tonumber(hex:sub(7, 8), 16) or 255
+    end
+    return r, g, b, a
+end
+
+--- 皮肤配置（与 docs/skins_data.lua 保持同步）
+local function LoadSkinsConfig()
+    return {
+        {
+            name = "Nekoark",
+            headImage = "image/Charactor/Nekoark/head_neko.png",
+            torsoImage = "image/Charactor/Nekoark/body_neko.png",
+            armColor = "#FFFFFFFF",
+            handColor = "#F5D2AAFF",
+            legColor = "#32323CFF",
+            shoeColor = "#50505AFF",
+            headTransform = { scale = 1.0, offsetX = 0, offsetY = 0, rotation = 0 },
+            torsoTransform = { scale = 1.0, offsetX = 0, offsetY = 0, rotation = 0 },
+        },
+    }
+end
+
+-- 皮肤数据（运行时）
+local skinsData_ = {}     -- 从 JSON 解析的原始数据
+local skinsRuntime_ = {}  -- 运行时数据（含 NanoVG 图片句柄）
+
 -- ============================================================================
 -- 游戏配置
 -- ============================================================================
 local CONFIG = {
     Title = "Photo Rush - 三人抓拍",
     Gravity = 20.0,
-    PixelPerUnit = 50,
+    OrthoSize = 10.8,     -- 固定正交尺寸(匹配1920x1080设计)
 
-    -- 地图
-    MapWidth = 20,        -- 地图宽度(物理单位)
-    MapHeight = 12,       -- 地图高度
-    GroundY = -5.0,       -- 地面Y
+    -- 地图(16:9 → 宽19.2, 高10.8)
+    MapWidth = 19.2,      -- 地图宽度(物理单位)
+    MapHeight = 10.8,     -- 地图高度
+    GroundY = -5.0,       -- 地面中心Y(高度0.8, 底部=-5.4=屏幕底)
 
     -- 玩家
     PlayerRadius = 0.4,
@@ -44,21 +83,24 @@ local CONFIG = {
 local PLAYERS = {
     {
         name = "P1",
-        color = {220, 60, 60, 255},       -- 红色
+        color = {220, 60, 60, 255},       -- 红色（备用/名牌色）
         keys = {left = KEY_Q, jump = KEY_W, right = KEY_E},
         spawnX = -4,
+        skinIndex = 1,
     },
     {
         name = "P2",
         color = {60, 200, 60, 255},       -- 绿色
         keys = {left = KEY_A, jump = KEY_S, right = KEY_D},
         spawnX = 0,
+        skinIndex = 1,
     },
     {
         name = "P3",
         color = {60, 100, 220, 255},      -- 蓝色
         keys = {left = KEY_Z, jump = KEY_X, right = KEY_C},
         spawnX = 4,
+        skinIndex = 1,
     },
 }
 
@@ -85,15 +127,33 @@ local photoZone_ = {
 }
 
 -- 游戏状态
-local gameState_ = "waiting"  -- waiting, countdown, flash, showPhoto
+local gameState_ = "bulletin"  -- bulletin, countdown, flash, showPhoto
 local countdown_ = 0
-local intervalTimer_ = 2.0    -- 初始等待时间
 local flashTimer_ = 0         -- 拍照闪光效果
 local showPhotoTimer_ = 0     -- 展示照片计时
 local roundResult_ = {}       -- 本轮结果(入镜玩家索引)
 local photoSnapshot_ = {}     -- 拍照瞬间玩家位置快照
 local gameOver_ = false
 local winner_ = ""
+
+-- 公告板状态
+local bulletin_ = {
+    round = 1,                -- 当前关卡
+    confirmed = {},           -- 各玩家是否确认 {false, false, false}
+    animPhase = "enter",      -- "enter"=弹入, "stay"=等待确认, "exit"=收起
+    animTimer = 0,            -- 动画计时器
+    enterDuration = 0.4,      -- 弹入动画时长
+    exitDuration = 0.35,      -- 收起动画时长
+}
+
+-- 关卡玩法描述（预留扩展）
+local ROUND_DESCRIPTIONS = {
+    "跑进📷拍照区域，倒计时结束时入镜得分！",
+    "拍照区域随机出现，抢占有利位置！",
+    "争分夺秒，冲进取景框！",
+    "站在📷里就能得分，别落下！",
+    "找到拍照区域，坚持到快门响起！",
+}
 
 -- 平台数据
 local platforms_ = {}
@@ -107,8 +167,12 @@ local shutterSound_ = nil
 
 -- 相机状态（用于 showPhoto 推进/恢复）
 local cameraNormalPos_ = Vector3(0, 0, -10)
-local cameraNormalOrtho_ = CONFIG.MapHeight
+local cameraNormalOrtho_ = CONFIG.OrthoSize  -- 会在运行时被 CalcContainOrthoSize() 更新
 local cameraZoomed_ = false
+
+-- 皮肤编辑器状态
+local skinEditorOpen_ = false
+local skinEditorPanel_ = nil
 
 -- ============================================================================
 -- 入口
@@ -120,6 +184,9 @@ function Start()
     nvg_ = nvgCreate(1)
     nvgCreateFont(nvg_, "sans", "Fonts/MiSans-Regular.ttf")
 
+    -- 加载皮肤配置
+    LoadSkins()
+
     -- 加载快门音效
     shutterSound_ = cache:GetResource("Sound", "audio/sfx/shutter.ogg")
 
@@ -127,6 +194,13 @@ function Start()
     CreateWorld()
     CreatePlayers()
     CreateUI()
+    CreateSkinEditor()
+
+    -- 初始化公告板
+    bulletin_.confirmed = {}
+    for i = 1, #PLAYERS do
+        bulletin_.confirmed[i] = false
+    end
 
     SubscribeToEvent("Update", "HandleUpdate")
     SubscribeToEvent(nvg_, "NanoVGRender", "HandleNanoVGRender")
@@ -135,6 +209,218 @@ function Start()
 
     print("=== Photo Rush 三人抓拍游戏启动 ===")
     print("P1(红): Q左 W跳 E右 | P2(绿): A左 S跳 D右 | P3(蓝): Z左 X跳 C右")
+end
+
+--- 解析 transform 字段，提供默认值
+local function ParseTransform(t)
+    if not t then return { scale = 1.0, offsetX = 0, offsetY = 0, rotation = 0 } end
+    return {
+        scale = t.scale or 1.0,
+        offsetX = t.offsetX or 0,
+        offsetY = t.offsetY or 0,
+        rotation = t.rotation or 0,
+    }
+end
+
+--- 加载皮肤并创建 NanoVG 图片句柄
+function LoadSkins()
+    skinsData_ = LoadSkinsConfig()
+    skinsRuntime_ = {}
+
+    for i, skin in ipairs(skinsData_) do
+        local runtime = {
+            name = skin.name,
+            headImg = nvgCreateImage(nvg_, skin.headImage, 0),
+            torsoImg = nvgCreateImage(nvg_, skin.torsoImage, 0),
+            armColor = { ParseHexColor(skin.armColor) },
+            handColor = { ParseHexColor(skin.handColor) },
+            legColor = { ParseHexColor(skin.legColor) },
+            shoeColor = { ParseHexColor(skin.shoeColor) },
+            headTransform = ParseTransform(skin.headTransform),
+            torsoTransform = ParseTransform(skin.torsoTransform),
+        }
+        table.insert(skinsRuntime_, runtime)
+        print(string.format("[Skin] Loaded: %s (head=%d, torso=%d)", skin.name, runtime.headImg, runtime.torsoImg))
+    end
+
+    if #skinsRuntime_ == 0 then
+        print("[Skin] WARNING: No skins loaded, will use fallback rendering")
+    end
+end
+
+-- ============================================================================
+-- 皮肤编辑器 UI
+-- ============================================================================
+function CreateSkinEditor()
+    if #skinsRuntime_ == 0 then return end
+    local skin = skinsRuntime_[1]  -- 编辑第一套皮肤
+
+    --- 创建一行 Slider 控制器
+    local function MakeSlider(label, min, max, value, step, onChange)
+        return UI.Panel {
+            flexDirection = "row", alignItems = "center", gap = 8,
+            height = 28,
+            children = {
+                UI.Label { text = label, fontSize = 12, fontColor = {200, 200, 200, 255}, width = 60 },
+                UI.Slider {
+                    width = 120, height = 16,
+                    min = min, max = max, value = value, step = step,
+                    onChange = onChange,
+                },
+                UI.Label {
+                    id = "val_" .. label,
+                    text = string.format("%.1f", value),
+                    fontSize = 11, fontColor = {160, 160, 160, 255}, width = 40,
+                },
+            }
+        }
+    end
+
+    local function updateVal(label, v)
+        local lbl = UI.FindById("val_" .. label)
+        if lbl then lbl:SetText(string.format("%.1f", v)) end
+    end
+
+    skinEditorPanel_ = UI.Panel {
+        id = "skinEditor",
+        position = "absolute",
+        top = 50, right = 10,
+        width = 260,
+        backgroundColor = {20, 20, 30, 220},
+        borderRadius = 8,
+        padding = 10,
+        gap = 4,
+        children = {
+            UI.Label { text = "Skin Editor (Tab 关闭)", fontSize = 14, fontColor = {255, 220, 100, 255} },
+            UI.Label { text = "── 头部 ──", fontSize = 12, fontColor = {150, 200, 255, 255} },
+            MakeSlider("H.Scale", 0.2, 3.0, skin.headTransform.scale, 0.1, function(self, v)
+                skin.headTransform.scale = v; updateVal("H.Scale", v)
+            end),
+            MakeSlider("H.OffX", -30, 30, skin.headTransform.offsetX, 1, function(self, v)
+                skin.headTransform.offsetX = v; updateVal("H.OffX", v)
+            end),
+            MakeSlider("H.OffY", -30, 30, skin.headTransform.offsetY, 1, function(self, v)
+                skin.headTransform.offsetY = v; updateVal("H.OffY", v)
+            end),
+            MakeSlider("H.Rot", -180, 180, skin.headTransform.rotation, 1, function(self, v)
+                skin.headTransform.rotation = v; updateVal("H.Rot", v)
+            end),
+            UI.Label { text = "── 躯干 ──", fontSize = 12, fontColor = {150, 200, 255, 255} },
+            MakeSlider("T.Scale", 0.2, 3.0, skin.torsoTransform.scale, 0.1, function(self, v)
+                skin.torsoTransform.scale = v; updateVal("T.Scale", v)
+            end),
+            MakeSlider("T.OffX", -30, 30, skin.torsoTransform.offsetX, 1, function(self, v)
+                skin.torsoTransform.offsetX = v; updateVal("T.OffX", v)
+            end),
+            MakeSlider("T.OffY", -30, 30, skin.torsoTransform.offsetY, 1, function(self, v)
+                skin.torsoTransform.offsetY = v; updateVal("T.OffY", v)
+            end),
+            MakeSlider("T.Rot", -180, 180, skin.torsoTransform.rotation, 1, function(self, v)
+                skin.torsoTransform.rotation = v; updateVal("T.Rot", v)
+            end),
+            -- 导出按钮（弹出文本框供复制）
+            UI.Button {
+                text = "导出配置", variant = "primary", height = 30,
+                onClick = function()
+                    local ht = skin.headTransform
+                    local tt = skin.torsoTransform
+                    local content = string.format(
+                        '-- 皮肤配置数据（由编辑器导出）\n'
+                        .. 'return {\n'
+                        .. '    skins = {\n'
+                        .. '        {\n'
+                        .. '            name = "Nekoark",\n'
+                        .. '            headImage = "image/Charactor/Nekoark/head_neko.png",\n'
+                        .. '            torsoImage = "image/Charactor/Nekoark/body_neko.png",\n'
+                        .. '            armColor = "#FFFFFFFF",\n'
+                        .. '            handColor = "#F5D2AAFF",\n'
+                        .. '            legColor = "#32323CFF",\n'
+                        .. '            shoeColor = "#50505AFF",\n'
+                        .. '            headTransform = { scale = %.1f, offsetX = %g, offsetY = %g, rotation = %g },\n'
+                        .. '            torsoTransform = { scale = %.1f, offsetX = %g, offsetY = %g, rotation = %g },\n'
+                        .. '        },\n'
+                        .. '    }\n'
+                        .. '}\n',
+                        ht.scale, ht.offsetX, ht.offsetY, ht.rotation,
+                        tt.scale, tt.offsetX, tt.offsetY, tt.rotation
+                    )
+                    ShowExportPopup(content)
+                end
+            },
+        }
+    }
+    skinEditorPanel_:SetVisible(false)
+
+    -- 挂载到 UI 根节点
+    local root = UI.FindById("root")
+    if root then
+        root:AddChild(skinEditorPanel_)
+    end
+end
+
+-- 导出弹窗（显示可复制的文本）
+local exportPopup_ = nil
+
+function ShowExportPopup(content)
+    -- 关闭已有弹窗
+    if exportPopup_ then
+        exportPopup_:Remove()
+        exportPopup_ = nil
+    end
+
+    exportPopup_ = UI.Panel {
+        position = "absolute",
+        top = 0, left = 0, right = 0, bottom = 0,
+        backgroundColor = {0, 0, 0, 180},
+        justifyContent = "center",
+        alignItems = "center",
+        children = {
+            UI.Panel {
+                width = 420, maxHeight = "80%",
+                backgroundColor = {30, 30, 40, 250},
+                borderRadius = 10,
+                padding = 16,
+                gap = 10,
+                children = {
+                    UI.Label { text = "配置内容（全选复制）", fontSize = 14, fontColor = {255, 220, 100, 255} },
+                    UI.ScrollView {
+                        width = "100%",
+                        height = 260,
+                        children = {
+                            UI.Label {
+                                text = content,
+                                fontSize = 11,
+                                fontColor = {220, 220, 220, 255},
+                                fontFamily = "monospace",
+                                selectable = true,
+                            },
+                        }
+                    },
+                    UI.Button {
+                        text = "关闭", variant = "outline", height = 30,
+                        onClick = function()
+                            if exportPopup_ then
+                                exportPopup_:Remove()
+                                exportPopup_ = nil
+                            end
+                        end
+                    },
+                }
+            }
+        }
+    }
+
+    local root = UI.FindById("root")
+    if root then
+        root:AddChild(exportPopup_)
+    end
+end
+
+function ToggleSkinEditor()
+    if skinEditorPanel_ == nil then return end
+    skinEditorOpen_ = not skinEditorOpen_
+    skinEditorPanel_:SetVisible(skinEditorOpen_)
+    print("[SkinEditor] " .. (skinEditorOpen_ and "打开" or "关闭"))
 end
 
 function Stop()
@@ -156,37 +442,68 @@ function CreateScene()
     cameraNode_ = scene_:CreateChild("Camera")
     local camera = cameraNode_:CreateComponent("Camera")
     camera.orthographic = true
-    camera.orthoSize = screenH_ / CONFIG.PixelPerUnit  -- 保持 PPU=50
+    -- Contain策略: 确保19.2x10.8设计区域始终完整可见并居中
+    camera.orthoSize = CalcContainOrthoSize()
     cameraNode_.position = Vector3(0, 0, -10)
 
     renderer:SetViewport(0, Viewport:new(scene_, camera))
+end
+
+--- 计算Contain策略下的orthoSize
+--- 设计区域19.2x10.8(16:9)始终完整可见，居中显示，多余部分留空
+function CalcContainOrthoSize()
+    local sw = graphics:GetWidth()
+    local sh = graphics:GetHeight()
+    if sw <= 0 or sh <= 0 then return CONFIG.OrthoSize end
+
+    local screenAspect = sw / sh
+    local designAspect = CONFIG.MapWidth / CONFIG.MapHeight  -- 16/9 ≈ 1.778
+
+    if screenAspect >= designAspect then
+        -- 屏幕更宽(或刚好16:9): 高度适配，两侧留空
+        return CONFIG.MapHeight  -- 10.8
+    else
+        -- 屏幕更高: 宽度适配，上下留空
+        return CONFIG.MapWidth / screenAspect
+    end
 end
 
 -- ============================================================================
 -- 创建世界(地面+平台)
 -- ============================================================================
 function CreateWorld()
-    -- 地面
+    -- 地面（高度0.8，底部贴屏幕底-5.4）
+    local groundHeight = 0.8
     local groundNode = scene_:CreateChild("Ground")
     groundNode:SetPosition2D(0, CONFIG.GroundY)
     local groundBody = groundNode:CreateComponent("RigidBody2D")
     groundBody.bodyType = BT_STATIC
     local groundShape = groundNode:CreateComponent("CollisionBox2D")
-    groundShape:SetSize(CONFIG.MapWidth + 4, 1)
+    groundShape:SetSize(CONFIG.MapWidth + 2, groundHeight)
     groundShape.friction = 0.3
     groundShape.restitution = 0.0
     groundShape.categoryBits = 1
-    table.insert(platforms_, {x=0, y=CONFIG.GroundY, width=CONFIG.MapWidth+4, height=1})
+    table.insert(platforms_, {x=0, y=CONFIG.GroundY, width=CONFIG.MapWidth+2, height=groundHeight})
 
-    -- 平台
+    -- 平台（根据设计图 1920x1080 布局，视野 19.2x10.8）
+    -- 地面顶部 Y=-4.6，屏幕顶部 Y=+5.4
     local platformData = {
-        {x = -6, y = -2.5, width = 3, height = 0.4},
-        {x = -2, y = -1.0, width = 2.5, height = 0.4},
-        {x = 3,  y = -2.0, width = 3, height = 0.4},
-        {x = 7,  y = -0.5, width = 2.5, height = 0.4},
-        {x = 0,  y = 1.0,  width = 3, height = 0.4},
-        {x = -5, y = 0.5,  width = 2, height = 0.4},
-        {x = 5,  y = 2.0,  width = 2.5, height = 0.4},
+        -- 左下
+        {x = -7.0, y = -3.2, width = 2.6, height = 0.35},
+        -- 左中
+        {x = -4.5, y = -0.8, width = 2.4, height = 0.35},
+        -- 中下
+        {x = -1.2, y = -2.0, width = 2.4, height = 0.35},
+        -- 中间（偏上）
+        {x =  1.2, y =  0.8, width = 2.8, height = 0.35},
+        -- 中右下
+        {x =  3.5, y = -3.0, width = 2.8, height = 0.35},
+        -- 右中
+        {x =  5.2, y = -0.5, width = 2.4, height = 0.35},
+        -- 右下
+        {x =  7.8, y = -1.8, width = 3.0, height = 0.35},
+        -- 上方（偏右）
+        {x =  4.5, y =  3.2, width = 1.8, height = 0.35},
     }
 
     for _, data in ipairs(platformData) do
@@ -203,14 +520,14 @@ function CreateWorld()
     end
 
     -- 左右墙壁(防止掉出地图)
-    local wallX = CONFIG.MapWidth / 2 + 1.5
+    local wallX = CONFIG.MapWidth / 2 + 0.8
     for _, wx in ipairs({-wallX, wallX}) do
         local wallNode = scene_:CreateChild("Wall")
         wallNode:SetPosition2D(wx, 0)
         local wallBody = wallNode:CreateComponent("RigidBody2D")
         wallBody.bodyType = BT_STATIC
         local wallShape = wallNode:CreateComponent("CollisionBox2D")
-        wallShape:SetSize(1, CONFIG.MapHeight + 4)
+        wallShape:SetSize(1, CONFIG.MapHeight + 2)
         wallShape.categoryBits = 1
     end
 end
@@ -369,10 +686,16 @@ function HandleUpdate(eventType, eventData)
     screenW_ = graphics:GetWidth()
     screenH_ = graphics:GetHeight()
 
-    -- 正常模式下：保持相机 orthoSize 与固定 PPU 一致
+    -- 正常模式下：使用Contain策略保持设计区域完整可见并居中
     if not cameraZoomed_ then
         local camera = cameraNode_:GetComponent("Camera")
-        camera.orthoSize = screenH_ / CONFIG.PixelPerUnit
+        camera.orthoSize = CalcContainOrthoSize()
+        cameraNode_.position = Vector3(0, 0, -10)
+    end
+
+    -- Tab 切换皮肤编辑器
+    if input:GetKeyPress(KEY_TAB) then
+        ToggleSkinEditor()
     end
 
     if gameOver_ then
@@ -383,9 +706,14 @@ function HandleUpdate(eventType, eventData)
         return
     end
 
-    -- showPhoto 期间冻结玩家（拍照定格效果）
-    if gameState_ ~= "showPhoto" and gameState_ ~= "flash" then
+    -- 只有 countdown 阶段玩家可以移动
+    if gameState_ == "countdown" then
         UpdatePlayers(dt)
+    end
+
+    -- 公告板阶段处理确认输入
+    if gameState_ == "bulletin" and bulletin_.animPhase == "stay" then
+        UpdateBulletinConfirm()
     end
 
     -- 更新游戏状态机
@@ -426,13 +754,50 @@ function UpdatePlayers(dt)
     end
 end
 
+function UpdateBulletinConfirm()
+    for i, p in ipairs(players_) do
+        if not bulletin_.confirmed[i] then
+            if input:GetKeyPress(p.config.keys.jump) then
+                bulletin_.confirmed[i] = true
+                print(p.config.name .. " 已确认准备")
+            end
+        end
+    end
+
+    -- 检查是否全员确认
+    local allConfirmed = true
+    for i = 1, #PLAYERS do
+        if not bulletin_.confirmed[i] then
+            allConfirmed = false
+            break
+        end
+    end
+
+    if allConfirmed then
+        -- 全员确认，开始收起动画
+        bulletin_.animPhase = "exit"
+        bulletin_.animTimer = 0
+    end
+end
+
 function UpdateGameState(dt)
-    if gameState_ == "waiting" then
-        intervalTimer_ = intervalTimer_ - dt
-        if intervalTimer_ <= 0 then
-            SpawnPhotoZone()
-            gameState_ = "countdown"
-            countdown_ = CONFIG.CountdownTime
+    if gameState_ == "bulletin" then
+        bulletin_.animTimer = bulletin_.animTimer + dt
+
+        if bulletin_.animPhase == "enter" then
+            -- 弹入动画播放完毕 → 进入等待确认
+            if bulletin_.animTimer >= bulletin_.enterDuration then
+                bulletin_.animPhase = "stay"
+                bulletin_.animTimer = 0
+            end
+        elseif bulletin_.animPhase == "exit" then
+            -- 收起动画播放完毕 → 进入游戏
+            if bulletin_.animTimer >= bulletin_.exitDuration then
+                -- 公告板结束，开始本关游戏
+                SpawnPhotoZone()
+                gameState_ = "countdown"
+                countdown_ = CONFIG.CountdownTime
+            end
         end
 
     elseif gameState_ == "countdown" then
@@ -456,12 +821,23 @@ function UpdateGameState(dt)
         showPhotoTimer_ = showPhotoTimer_ - dt
         if showPhotoTimer_ <= 0 then
             photoZone_.active = false
-            gameState_ = "waiting"
-            intervalTimer_ = CONFIG.IntervalTime
             -- 恢复相机
             RestoreCameraFromZoom()
+            -- 进入下一关公告板
+            StartNextBulletin()
         end
     end
+end
+
+function StartNextBulletin()
+    bulletin_.round = bulletin_.round + 1
+    bulletin_.confirmed = {}
+    for i = 1, #PLAYERS do
+        bulletin_.confirmed[i] = false
+    end
+    bulletin_.animPhase = "enter"
+    bulletin_.animTimer = 0
+    gameState_ = "bulletin"
 end
 
 -- ============================================================================
@@ -579,8 +955,6 @@ end
 function RestartGame()
     gameOver_ = false
     winner_ = ""
-    gameState_ = "waiting"
-    intervalTimer_ = 2.0
     photoZone_.active = false
     roundResult_ = {}
 
@@ -590,6 +964,10 @@ function RestartGame()
         p.body.linearVelocity = Vector2(0, 0)
     end
     UpdateScoreUI()
+
+    -- 重置公告板，从第 1 关开始
+    bulletin_.round = 0  -- StartNextBulletin 会 +1
+    StartNextBulletin()
     print("=== 游戏重新开始 ===")
 end
 
@@ -608,6 +986,7 @@ function HandleNanoVGRender(eventType, eventData)
     DrawCountdown()
     DrawFlashEffect()
     DrawShowPhoto()
+    DrawBulletin()
     DrawGameOver()
 
     nvgEndFrame(nvg_)
@@ -845,8 +1224,12 @@ function DrawPlayers()
     for i, p in ipairs(players_) do
         local pos = p.node.position2D
         local sx, sy = PhysToScreen(pos.x, pos.y)
-        local r = CONFIG.PlayerRadius * ppu
+        local r = CONFIG.PlayerRadius * ppu  -- 基准半径 20px
         local c = p.config.color
+
+        -- 获取皮肤
+        local skinIdx = p.config.skinIndex or 1
+        local skin = skinsRuntime_[skinIdx]
 
         -- 动画参数
         local limbSwing = 0
@@ -854,140 +1237,157 @@ function DrawPlayers()
         local inAir = not p.onGround
 
         if inAir then
-            -- 跳跃姿态：手脚张开
-            limbSwing = 0.4
-            armSwing = -0.5
+            limbSwing = 0.35
+            armSwing = -0.4
         elseif p.isMoving then
-            -- 走路摆动
-            limbSwing = math.sin(p.animTime) * 0.6
-            armSwing = -math.sin(p.animTime) * 0.5
+            limbSwing = math.sin(p.animTime) * 0.5
+            armSwing = -math.sin(p.animTime) * 0.4
         end
 
-        local legLen = r * 0.75
-        local armLen = r * 0.6
-        local limbWidth = 3.5
-        local darkC = {math.max(0, c[1] - 50), math.max(0, c[2] - 50), math.max(0, c[3] - 50)}
+        -- 部件尺寸（基于文档比例，r=20px 基准）
+        local headR = r * 0.75          -- 头部半径 15px
+        local torsoW = r * 1.8          -- 躯干宽 36px
+        local torsoH = r * 2.0          -- 躯干高 40px
+        local armW = r * 0.28           -- 手臂宽 5.6px
+        local armH = r * 0.85           -- 手臂高 17px
+        local handR = r * 0.17          -- 手掌半径 3.4px
+        local legW = r * 0.32           -- 腿宽 6.4px
+        local legH = r * 0.9            -- 腿高 18px
+        local shoeW = r * 0.45          -- 鞋宽 9px
+        local shoeH = r * 0.26          -- 鞋高 5.1px
 
-        -- 左腿
-        local leftLegAngle = limbSwing
-        local leftLegEndX = sx - 5 + math.sin(leftLegAngle) * legLen
-        local leftLegEndY = sy + r * 0.6 + math.cos(leftLegAngle) * legLen
-        nvgBeginPath(nvg_)
-        nvgMoveTo(nvg_, sx - 5, sy + r * 0.5)
-        nvgLineTo(nvg_, leftLegEndX, leftLegEndY)
-        nvgStrokeColor(nvg_, nvgRGBA(darkC[1], darkC[2], darkC[3], 255))
-        nvgStrokeWidth(nvg_, limbWidth)
-        nvgLineCap(nvg_, NVG_ROUND)
-        nvgStroke(nvg_)
-        -- 左脚（小圆）
-        nvgBeginPath(nvg_)
-        nvgCircle(nvg_, leftLegEndX, leftLegEndY, 3.5)
-        nvgFillColor(nvg_, nvgRGBA(darkC[1], darkC[2], darkC[3], 255))
-        nvgFill(nvg_)
+        -- 身体中心偏移（物理体中心对齐躯干中心）
+        local torsoY = sy                           -- 躯干中心 = 物理中心
+        local headY = torsoY - torsoH * 0.35 - headR  -- 头部与躯干重叠35%
+        local hipY = torsoY + torsoH * 0.45         -- 腿部起始
 
-        -- 右腿
-        local rightLegAngle = -limbSwing
-        local rightLegEndX = sx + 5 + math.sin(rightLegAngle) * legLen
-        local rightLegEndY = sy + r * 0.6 + math.cos(rightLegAngle) * legLen
-        nvgBeginPath(nvg_)
-        nvgMoveTo(nvg_, sx + 5, sy + r * 0.5)
-        nvgLineTo(nvg_, rightLegEndX, rightLegEndY)
-        nvgStrokeColor(nvg_, nvgRGBA(darkC[1], darkC[2], darkC[3], 255))
-        nvgStrokeWidth(nvg_, limbWidth)
-        nvgLineCap(nvg_, NVG_ROUND)
-        nvgStroke(nvg_)
-        -- 右脚
-        nvgBeginPath(nvg_)
-        nvgCircle(nvg_, rightLegEndX, rightLegEndY, 3.5)
-        nvgFillColor(nvg_, nvgRGBA(darkC[1], darkC[2], darkC[3], 255))
-        nvgFill(nvg_)
+        -- 使用皮肤渲染还是纯色回退
+        if skin then
+            local ac = skin.armColor
+            local hc = skin.handColor
+            local lc = skin.legColor
+            local sc = skin.shoeColor
 
-        -- 左手臂
-        local leftArmAngle = armSwing
-        local armStartX = sx - r * 0.7
-        local armStartY = sy - r * 0.1
-        local leftArmEndX = armStartX + math.sin(leftArmAngle) * armLen - 4
-        local leftArmEndY = armStartY + math.cos(leftArmAngle) * armLen
-        nvgBeginPath(nvg_)
-        nvgMoveTo(nvg_, armStartX, armStartY)
-        nvgLineTo(nvg_, leftArmEndX, leftArmEndY)
-        nvgStrokeColor(nvg_, nvgRGBA(c[1], c[2], c[3], 255))
-        nvgStrokeWidth(nvg_, limbWidth)
-        nvgLineCap(nvg_, NVG_ROUND)
-        nvgStroke(nvg_)
-        -- 左手（小圆）
-        nvgBeginPath(nvg_)
-        nvgCircle(nvg_, leftArmEndX, leftArmEndY, 3)
-        nvgFillColor(nvg_, nvgRGBA(255, 220, 180, 255))
-        nvgFill(nvg_)
+            -- ========== 1. 腿部 + 鞋子（最底层）==========
+            local legSpacing = torsoW * 0.22
+            for side = -1, 1, 2 do
+                local legAngle = side == -1 and limbSwing or -limbSwing
+                local legCX = sx + side * legSpacing
 
-        -- 右手臂
-        local rightArmAngle = -armSwing
-        local armStartRX = sx + r * 0.7
-        local rightArmEndX = armStartRX + math.sin(rightArmAngle) * armLen + 4
-        local rightArmEndY = armStartY + math.cos(rightArmAngle) * armLen
-        nvgBeginPath(nvg_)
-        nvgMoveTo(nvg_, armStartRX, armStartY)
-        nvgLineTo(nvg_, rightArmEndX, rightArmEndY)
-        nvgStrokeColor(nvg_, nvgRGBA(c[1], c[2], c[3], 255))
-        nvgStrokeWidth(nvg_, limbWidth)
-        nvgLineCap(nvg_, NVG_ROUND)
-        nvgStroke(nvg_)
-        -- 右手
-        nvgBeginPath(nvg_)
-        nvgCircle(nvg_, rightArmEndX, rightArmEndY, 3)
-        nvgFillColor(nvg_, nvgRGBA(255, 220, 180, 255))
-        nvgFill(nvg_)
+                nvgSave(nvg_)
+                nvgTranslate(nvg_, legCX, hipY)
+                nvgRotate(nvg_, legAngle)
 
-        -- 身体(圆形+渐变)
-        nvgBeginPath(nvg_)
-        nvgCircle(nvg_, sx, sy, r)
-        local bodyGrad = nvgRadialGradient(nvg_, sx - 4, sy - 4, 2, r + 2,
-            nvgRGBA(math.min(255, c[1] + 40), math.min(255, c[2] + 40), math.min(255, c[3] + 40), 255),
-            nvgRGBA(c[1], c[2], c[3], 255))
-        nvgFillPaint(nvg_, bodyGrad)
-        nvgFill(nvg_)
+                -- 腿（圆角矩形）
+                nvgBeginPath(nvg_)
+                nvgRoundedRect(nvg_, -legW / 2, 0, legW, legH, legW * 0.3)
+                nvgFillColor(nvg_, nvgRGBA(lc[1], lc[2], lc[3], lc[4]))
+                nvgFill(nvg_)
 
-        -- 边框
-        nvgBeginPath(nvg_)
-        nvgCircle(nvg_, sx, sy, r)
-        nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, 100))
-        nvgStrokeWidth(nvg_, 2)
-        nvgStroke(nvg_)
+                -- 鞋子（圆角矩形，在腿底部）
+                nvgBeginPath(nvg_)
+                nvgRoundedRect(nvg_, -shoeW / 2, legH - shoeH * 0.3, shoeW, shoeH, shoeH * 0.3)
+                nvgFillColor(nvg_, nvgRGBA(sc[1], sc[2], sc[3], sc[4]))
+                nvgFill(nvg_)
 
-        -- 眼睛(朝向方向)
-        local eyeOffX = p.facing * 5
-        nvgBeginPath(nvg_)
-        nvgCircle(nvg_, sx + eyeOffX - 4, sy - 4, 3)
-        nvgCircle(nvg_, sx + eyeOffX + 4, sy - 4, 3)
-        nvgFillColor(nvg_, nvgRGBA(255, 255, 255, 255))
-        nvgFill(nvg_)
+                nvgRestore(nvg_)
+            end
 
-        -- 瞳孔
-        nvgBeginPath(nvg_)
-        nvgCircle(nvg_, sx + eyeOffX - 3 + p.facing, sy - 3, 1.5)
-        nvgCircle(nvg_, sx + eyeOffX + 5 + p.facing, sy - 3, 1.5)
-        nvgFillColor(nvg_, nvgRGBA(0, 0, 0, 255))
-        nvgFill(nvg_)
+            -- ========== 2. 躯干（图片，圆角矩形裁剪）==========
+            local tt = skin.torsoTransform
+            nvgSave(nvg_)
+            nvgTranslate(nvg_, sx + tt.offsetX, torsoY + tt.offsetY)
+            nvgRotate(nvg_, math.rad(tt.rotation))
+            nvgScale(nvg_, tt.scale, tt.scale)
 
-        -- 微笑（移动时张嘴）
-        nvgBeginPath(nvg_)
-        if p.isMoving or inAir then
-            -- 开心的嘴
-            nvgArc(nvg_, sx + p.facing * 3, sy + 4, 4, 0, math.pi, NVG_CW)
+            local halfTW = torsoW / 2
+            local halfTH = torsoH / 2
+            local cornerR = torsoW * 0.15
+
+            if skin.torsoImg > 0 then
+                nvgBeginPath(nvg_)
+                nvgRoundedRect(nvg_, -halfTW, -halfTH, torsoW, torsoH, cornerR)
+                local imgPaint
+                if p.facing < 0 then
+                    imgPaint = nvgImagePattern(nvg_, halfTW, -halfTH, -torsoW, torsoH, 0, skin.torsoImg, 1.0)
+                else
+                    imgPaint = nvgImagePattern(nvg_, -halfTW, -halfTH, torsoW, torsoH, 0, skin.torsoImg, 1.0)
+                end
+                nvgFillPaint(nvg_, imgPaint)
+                nvgFill(nvg_)
+            else
+                nvgBeginPath(nvg_)
+                nvgRoundedRect(nvg_, -halfTW, -halfTH, torsoW, torsoH, cornerR)
+                nvgFillColor(nvg_, nvgRGBA(ac[1], ac[2], ac[3], ac[4]))
+                nvgFill(nvg_)
+            end
+            nvgRestore(nvg_)
+
+            -- ========== 3. 手臂 + 手掌 ==========
+            local shoulderY = torsoY - torsoH * 0.3
+            local armOffsetX = torsoW / 2 + armW * 0.3
+            for side = -1, 1, 2 do
+                local armAngle = side == -1 and armSwing or -armSwing
+                local armCX = sx + side * armOffsetX
+
+                nvgSave(nvg_)
+                nvgTranslate(nvg_, armCX, shoulderY)
+                nvgRotate(nvg_, armAngle)
+
+                -- 手臂（圆角矩形）
+                nvgBeginPath(nvg_)
+                nvgRoundedRect(nvg_, -armW / 2, 0, armW, armH, armW * 0.4)
+                nvgFillColor(nvg_, nvgRGBA(ac[1], ac[2], ac[3], ac[4]))
+                nvgFill(nvg_)
+
+                -- 手掌（圆形）
+                nvgBeginPath(nvg_)
+                nvgCircle(nvg_, 0, armH + handR * 0.5, handR)
+                nvgFillColor(nvg_, nvgRGBA(hc[1], hc[2], hc[3], hc[4]))
+                nvgFill(nvg_)
+
+                nvgRestore(nvg_)
+            end
+
+            -- ========== 4. 头部（图片，圆形裁剪）==========
+            local ht = skin.headTransform
+            nvgSave(nvg_)
+            nvgTranslate(nvg_, sx + ht.offsetX, headY + ht.offsetY)
+            nvgRotate(nvg_, math.rad(ht.rotation))
+            nvgScale(nvg_, ht.scale, ht.scale)
+
+            if skin.headImg > 0 then
+                nvgBeginPath(nvg_)
+                nvgCircle(nvg_, 0, 0, headR)
+                local headImgPaint
+                if p.facing < 0 then
+                    headImgPaint = nvgImagePattern(nvg_, headR, -headR, -headR * 2, headR * 2, 0, skin.headImg, 1.0)
+                else
+                    headImgPaint = nvgImagePattern(nvg_, -headR, -headR, headR * 2, headR * 2, 0, skin.headImg, 1.0)
+                end
+                nvgFillPaint(nvg_, headImgPaint)
+                nvgFill(nvg_)
+            else
+                nvgBeginPath(nvg_)
+                nvgCircle(nvg_, 0, 0, headR)
+                nvgFillColor(nvg_, nvgRGBA(hc[1], hc[2], hc[3], hc[4]))
+                nvgFill(nvg_)
+            end
+            nvgRestore(nvg_)
+
         else
-            -- 微笑弧线
-            nvgArc(nvg_, sx + p.facing * 3, sy + 3, 3, 0.2, math.pi - 0.2, NVG_CW)
+            -- ========== 无皮肤回退：简单圆形 ==========
+            nvgBeginPath(nvg_)
+            nvgCircle(nvg_, sx, sy, r)
+            nvgFillColor(nvg_, nvgRGBA(c[1], c[2], c[3], c[4]))
+            nvgFill(nvg_)
         end
-        nvgStrokeColor(nvg_, nvgRGBA(0, 0, 0, 200))
-        nvgStrokeWidth(nvg_, 1.5)
-        nvgStroke(nvg_)
 
-        -- 移动时的速度线
+        -- ========== 速度线效果 ==========
         if p.isMoving and p.onGround then
             local lineDir = -p.facing
             for l = 1, 3 do
-                local lx = sx + lineDir * (r + 4 + l * 5)
+                local lx = sx + lineDir * (torsoW / 2 + 4 + l * 5)
                 local ly = sy - 4 + l * 5
                 local lineLen = 6 + (3 - l) * 3
                 nvgBeginPath(nvg_)
@@ -999,22 +1399,23 @@ function DrawPlayers()
             end
         end
 
-        -- 跳跃时的下方气流效果
+        -- ========== 跳跃气流效果 ==========
         if inAir and p.velY > 2 then
             for l = 1, 3 do
                 nvgBeginPath(nvg_)
-                nvgCircle(nvg_, sx - 6 + l * 6, sy + r + 8 + l * 4, 2 - l * 0.4)
+                nvgCircle(nvg_, sx - 6 + l * 6, hipY + legH + 8 + l * 4, 2 - l * 0.4)
                 nvgFillColor(nvg_, nvgRGBA(255, 255, 255, 120 - l * 30))
                 nvgFill(nvg_)
             end
         end
 
-        -- 名字标签
+        -- ========== 名字标签 ==========
         nvgFontSize(nvg_, 14)
         nvgFontFace(nvg_, "sans")
         nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
         nvgFillColor(nvg_, nvgRGBA(c[1], c[2], c[3], 255))
-        nvgText(nvg_, sx, sy - r - 10, p.config.name, nil)
+        local nameY = skin and (headY - headR - 6) or (sy - r - 10)
+        nvgText(nvg_, sx, nameY, p.config.name, nil)
     end
 end
 
@@ -1144,6 +1545,193 @@ function DrawShowPhoto()
     nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
     nvgFillColor(nvg_, nvgRGBA(255, 255, 255, math.floor(200 * progress)))
     nvgText(nvg_, screenW_ / 2, photoY * 0.5, "📷 PHOTO", nil)
+
+    nvgRestore(nvg_)
+end
+
+function DrawBulletin()
+    if gameState_ ~= "bulletin" then return end
+
+    -- 计算动画进度 (0~1)
+    local progress = 0
+    if bulletin_.animPhase == "enter" then
+        progress = math.min(1.0, bulletin_.animTimer / bulletin_.enterDuration)
+    elseif bulletin_.animPhase == "stay" then
+        progress = 1.0
+    elseif bulletin_.animPhase == "exit" then
+        progress = 1.0 - math.min(1.0, bulletin_.animTimer / bulletin_.exitDuration)
+    end
+
+    -- easeOutBack 缓动（弹入时有弹性感）
+    local function easeOutBack(t)
+        local c1 = 1.70158
+        local c3 = c1 + 1
+        return 1 + c3 * math.pow(t - 1, 3) + c1 * math.pow(t - 1, 2)
+    end
+
+    -- 弹入用 easeOutBack，收起用加速
+    local displayProgress
+    if bulletin_.animPhase == "enter" then
+        displayProgress = easeOutBack(progress)
+    elseif bulletin_.animPhase == "exit" then
+        displayProgress = progress * progress  -- easeIn (加速收起)
+    else
+        displayProgress = 1.0
+    end
+
+    -- 半透明背景遮罩
+    local maskAlpha = math.floor(140 * displayProgress)
+    nvgBeginPath(nvg_)
+    nvgRect(nvg_, 0, 0, screenW_, screenH_)
+    nvgFillColor(nvg_, nvgRGBA(0, 0, 0, maskAlpha))
+    nvgFill(nvg_)
+
+    -- 公告板尺寸
+    local boardW = math.min(480, screenW_ * 0.7)
+    local boardH = math.min(320, screenH_ * 0.6)
+    local boardX = (screenW_ - boardW) / 2
+    -- 从上方滑入：初始位置在屏幕上方外面
+    local targetY = (screenH_ - boardH) / 2
+    local startY = -boardH - 20
+    local boardY = startY + (targetY - startY) * displayProgress
+
+    nvgSave(nvg_)
+
+    -- 公告板阴影
+    nvgBeginPath(nvg_)
+    nvgRoundedRect(nvg_, boardX + 4, boardY + 6, boardW, boardH, 16)
+    nvgFillColor(nvg_, nvgRGBA(0, 0, 0, math.floor(80 * displayProgress)))
+    nvgFill(nvg_)
+
+    -- 公告板主体（深色背景+圆角）
+    nvgBeginPath(nvg_)
+    nvgRoundedRect(nvg_, boardX, boardY, boardW, boardH, 16)
+    local boardGrad = nvgLinearGradient(nvg_, boardX, boardY, boardX, boardY + boardH,
+        nvgRGBA(45, 55, 75, 250), nvgRGBA(30, 38, 55, 250))
+    nvgFillPaint(nvg_, boardGrad)
+    nvgFill(nvg_)
+
+    -- 边框
+    nvgBeginPath(nvg_)
+    nvgRoundedRect(nvg_, boardX, boardY, boardW, boardH, 16)
+    nvgStrokeColor(nvg_, nvgRGBA(100, 160, 255, math.floor(180 * displayProgress)))
+    nvgStrokeWidth(nvg_, 2)
+    nvgStroke(nvg_)
+
+    -- 顶部标题栏背景
+    local titleBarH = 50
+    nvgBeginPath(nvg_)
+    -- 顶部两个圆角，底部直角（用 clip 模拟）
+    nvgRoundedRect(nvg_, boardX, boardY, boardW, titleBarH, 16)
+    nvgFillColor(nvg_, nvgRGBA(60, 120, 220, math.floor(200 * displayProgress)))
+    nvgFill(nvg_)
+    -- 底部覆盖掉圆角
+    nvgBeginPath(nvg_)
+    nvgRect(nvg_, boardX, boardY + titleBarH - 16, boardW, 16)
+    nvgFillColor(nvg_, nvgRGBA(60, 120, 220, math.floor(200 * displayProgress)))
+    nvgFill(nvg_)
+
+    -- 标题文字: "第 X 关"
+    nvgFontSize(nvg_, 26)
+    nvgFontFace(nvg_, "sans")
+    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg_, nvgRGBA(255, 255, 255, math.floor(255 * displayProgress)))
+    nvgText(nvg_, screenW_ / 2, boardY + titleBarH / 2, "第 " .. bulletin_.round .. " 关", nil)
+
+    -- 玩法说明文字
+    local descIdx = ((bulletin_.round - 1) % #ROUND_DESCRIPTIONS) + 1
+    local desc = ROUND_DESCRIPTIONS[descIdx]
+    nvgFontSize(nvg_, 20)
+    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg_, nvgRGBA(230, 230, 240, math.floor(240 * displayProgress)))
+    nvgText(nvg_, screenW_ / 2, boardY + titleBarH + 45, desc, nil)
+
+    -- 玩家头像区域
+    local avatarY = boardY + titleBarH + 100
+    local avatarSpacing = boardW / (#PLAYERS + 1)
+    local avatarR = 28
+
+    for i, pdata in ipairs(PLAYERS) do
+        local ax = boardX + avatarSpacing * i
+        local ay = avatarY
+        local c = pdata.color
+
+        -- 头像圆圈背景
+        nvgBeginPath(nvg_)
+        nvgCircle(nvg_, ax, ay, avatarR)
+        local avatarGrad = nvgRadialGradient(nvg_, ax - 4, ay - 4, 2, avatarR,
+            nvgRGBA(math.min(255, c[1] + 60), math.min(255, c[2] + 60), math.min(255, c[3] + 60), 255),
+            nvgRGBA(c[1], c[2], c[3], 255))
+        nvgFillPaint(nvg_, avatarGrad)
+        nvgFill(nvg_)
+
+        -- 头像边框
+        nvgBeginPath(nvg_)
+        nvgCircle(nvg_, ax, ay, avatarR)
+        nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, 150))
+        nvgStrokeWidth(nvg_, 2)
+        nvgStroke(nvg_)
+
+        -- 头像里的眼睛
+        nvgBeginPath(nvg_)
+        nvgCircle(nvg_, ax - 7, ay - 5, 4)
+        nvgCircle(nvg_, ax + 7, ay - 5, 4)
+        nvgFillColor(nvg_, nvgRGBA(255, 255, 255, 255))
+        nvgFill(nvg_)
+        nvgBeginPath(nvg_)
+        nvgCircle(nvg_, ax - 6, ay - 4, 2)
+        nvgCircle(nvg_, ax + 8, ay - 4, 2)
+        nvgFillColor(nvg_, nvgRGBA(0, 0, 0, 255))
+        nvgFill(nvg_)
+
+        -- 微笑
+        nvgBeginPath(nvg_)
+        nvgArc(nvg_, ax, ay + 6, 6, 0.2, math.pi - 0.2, NVG_CW)
+        nvgStrokeColor(nvg_, nvgRGBA(0, 0, 0, 200))
+        nvgStrokeWidth(nvg_, 2)
+        nvgStroke(nvg_)
+
+        -- 名字
+        nvgFontSize(nvg_, 14)
+        nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+        nvgFillColor(nvg_, nvgRGBA(c[1], c[2], c[3], math.floor(255 * displayProgress)))
+        nvgText(nvg_, ax, ay + avatarR + 6, pdata.name, nil)
+
+        -- 对勾（如果已确认）
+        if bulletin_.confirmed[i] then
+            -- 绿色对勾圆圈
+            nvgBeginPath(nvg_)
+            nvgCircle(nvg_, ax + avatarR * 0.65, ay - avatarR * 0.65, 12)
+            nvgFillColor(nvg_, nvgRGBA(40, 200, 80, 255))
+            nvgFill(nvg_)
+            nvgBeginPath(nvg_)
+            nvgCircle(nvg_, ax + avatarR * 0.65, ay - avatarR * 0.65, 12)
+            nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, 255))
+            nvgStrokeWidth(nvg_, 2)
+            nvgStroke(nvg_)
+
+            -- 绘制对勾 ✓
+            local cx = ax + avatarR * 0.65
+            local cy = ay - avatarR * 0.65
+            nvgBeginPath(nvg_)
+            nvgMoveTo(nvg_, cx - 5, cy)
+            nvgLineTo(nvg_, cx - 1, cy + 4)
+            nvgLineTo(nvg_, cx + 6, cy - 4)
+            nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, 255))
+            nvgStrokeWidth(nvg_, 2.5)
+            nvgLineCap(nvg_, NVG_ROUND)
+            nvgLineJoin(nvg_, NVG_ROUND)
+            nvgStroke(nvg_)
+        end
+    end
+
+    -- 底部提示文字
+    local hintY = boardY + boardH - 35
+    local hintAlpha = math.floor((math.sin(os.clock() * 3) * 0.3 + 0.7) * 255 * displayProgress)
+    nvgFontSize(nvg_, 15)
+    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg_, nvgRGBA(180, 200, 255, hintAlpha))
+    nvgText(nvg_, screenW_ / 2, hintY, "按 [跳跃键] 表示已理解规则", nil)
 
     nvgRestore(nvg_)
 end
