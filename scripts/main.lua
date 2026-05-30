@@ -207,6 +207,7 @@ function Start()
     SubscribeToEvent("PhysicsBeginContact2D", "HandleBeginContact")
     SubscribeToEvent("PhysicsEndContact2D", "HandleEndContact")
 
+
     print("=== Photo Rush 三人抓拍游戏启动 ===")
     print("P1(红): Q左 W跳 E右 | P2(绿): A左 S跳 D右 | P3(蓝): Z左 X跳 C右")
 end
@@ -686,12 +687,10 @@ function HandleUpdate(eventType, eventData)
     screenW_ = graphics:GetWidth()
     screenH_ = graphics:GetHeight()
 
-    -- 正常模式下：使用Contain策略保持设计区域完整可见并居中
-    if not cameraZoomed_ then
-        local camera = cameraNode_:GetComponent("Camera")
-        camera.orthoSize = CalcContainOrthoSize()
-        cameraNode_.position = Vector3(0, 0, -10)
-    end
+    -- 使用Contain策略保持设计区域完整可见并居中
+    local camera = cameraNode_:GetComponent("Camera")
+    camera.orthoSize = CalcContainOrthoSize()
+    cameraNode_.position = Vector3(0, 0, -10)
 
     -- Tab 切换皮肤编辑器
     if input:GetKeyPress(KEY_TAB) then
@@ -812,17 +811,13 @@ function UpdateGameState(dt)
         flashTimer_ = flashTimer_ - dt
         if flashTimer_ <= 0 then
             gameState_ = "showPhoto"
-            showPhotoTimer_ = 1.5  -- 展示照片1.5秒
-            -- 推进相机到拍照区域
-            ZoomCameraToPhotoZone()
+            showPhotoTimer_ = 2.5  -- 展示照片2.5秒
         end
 
     elseif gameState_ == "showPhoto" then
         showPhotoTimer_ = showPhotoTimer_ - dt
         if showPhotoTimer_ <= 0 then
             photoZone_.active = false
-            -- 恢复相机
-            RestoreCameraFromZoom()
             -- 进入下一关公告板
             StartNextBulletin()
         end
@@ -875,6 +870,9 @@ function TakePhoto()
             x = pos.x,
             y = pos.y,
             facing = p.facing,
+            onGround = p.onGround,
+            isMoving = p.isMoving,
+            animTime = p.animTime,
         }
 
         -- 检查玩家是否在拍照区域内
@@ -901,47 +899,6 @@ function TakePhoto()
     UpdateScoreUI()
 end
 
--- ============================================================================
--- 相机推进/恢复（拍照展示用）
--- ============================================================================
-function ZoomCameraToPhotoZone()
-    -- 保存当前状态
-    cameraNormalPos_ = cameraNode_.position
-    local camera = cameraNode_:GetComponent("Camera")
-    cameraNormalOrtho_ = camera.orthoSize
-
-    -- 轻微缩放：仅缩小到正常的 80%，主要靠居中+暗色边框营造拍照感
-    -- 不要缩放太多，否则角色会变成"大胖球"
-    local targetOrtho = cameraNormalOrtho_ * 0.8
-
-    cameraNode_.position = Vector3(photoZone_.x, photoZone_.y, -10)
-    camera.orthoSize = targetOrtho
-    cameraZoomed_ = true
-
-    -- 冻结物理世界（玩家定格）
-    for _, p in ipairs(players_) do
-        p.savedVelocity = p.body.linearVelocity
-        p.body.linearVelocity = Vector2(0, 0)
-        p.body.gravityScale = 0
-    end
-end
-
-function RestoreCameraFromZoom()
-    if not cameraZoomed_ then return end
-    cameraNode_.position = cameraNormalPos_
-    local camera = cameraNode_:GetComponent("Camera")
-    camera.orthoSize = cameraNormalOrtho_
-    cameraZoomed_ = false
-
-    -- 恢复物理
-    for _, p in ipairs(players_) do
-        p.body.gravityScale = 1.0
-        if p.savedVelocity then
-            p.body.linearVelocity = p.savedVelocity
-            p.savedVelocity = nil
-        end
-    end
-end
 
 function UpdateScoreUI()
     for i, p in ipairs(players_) do
@@ -1169,7 +1126,7 @@ end
 
 function DrawPhotoZone()
     if not photoZone_.active then return end
-    if gameState_ == "showPhoto" then return end  -- 相机已推进，不绘制标记
+    if gameState_ == "showPhoto" then return end  -- 展示照片时不绘制标记
 
     local ppu = GetPixelsPerUnit()
     local sx, sy = PhysToScreen(photoZone_.x, photoZone_.y)
@@ -1219,23 +1176,203 @@ function DrawPhotoZone()
     nvgText(nvg_, sx, sy - ph/2 - 24, "📷 拍照区域", nil)
 end
 
-function DrawPlayers()
+--- 绘制单个玩家（共享函数）
+--- @param params table {sx, sy, color, skin, skinIdx, facing, limbSwing, armSwing, inAir, isMoving, onGround, velY, name}
+function DrawSinglePlayer(params)
     local ppu = GetPixelsPerUnit()
+    local r = CONFIG.PlayerRadius * ppu
+    local sx, sy = params.sx, params.sy
+    local c = params.color
+    local skin = params.skin
+    local facing = params.facing
+    local limbSwing = params.limbSwing
+    local armSwing = params.armSwing
+    local inAir = params.inAir
+    local isMoving = params.isMoving
+    local onGround = params.onGround
+    local velY = params.velY or 0
+    local name = params.name
+
+    -- 部件尺寸（基于文档比例，r=20px 基准）
+    local headR = r * 0.75
+    local torsoW = r * 1.8
+    local torsoH = r * 2.0
+    local armW = r * 0.28
+    local armH = r * 0.85
+    local handR = r * 0.17
+    local legW = r * 0.32
+    local legH = r * 0.9
+    local shoeW = r * 0.45
+    local shoeH = r * 0.26
+
+    -- 身体中心偏移
+    local torsoY = sy
+    local headY = torsoY - torsoH * 0.35 - headR
+    local hipY = torsoY + torsoH * 0.45
+
+    if skin then
+        local ac = skin.armColor
+        local hc = skin.handColor
+        local lc = skin.legColor
+        local sc = skin.shoeColor
+
+        -- ========== 1. 腿部 + 鞋子（最底层）==========
+        local legSpacing = torsoW * 0.22
+        for side = -1, 1, 2 do
+            local legAngle = side == -1 and limbSwing or -limbSwing
+            local legCX = sx + side * legSpacing
+
+            nvgSave(nvg_)
+            nvgTranslate(nvg_, legCX, hipY)
+            nvgRotate(nvg_, legAngle)
+
+            nvgBeginPath(nvg_)
+            nvgRoundedRect(nvg_, -legW / 2, 0, legW, legH, legW * 0.3)
+            nvgFillColor(nvg_, nvgRGBA(lc[1], lc[2], lc[3], lc[4]))
+            nvgFill(nvg_)
+
+            nvgBeginPath(nvg_)
+            nvgRoundedRect(nvg_, -shoeW / 2, legH - shoeH * 0.3, shoeW, shoeH, shoeH * 0.3)
+            nvgFillColor(nvg_, nvgRGBA(sc[1], sc[2], sc[3], sc[4]))
+            nvgFill(nvg_)
+
+            nvgRestore(nvg_)
+        end
+
+        -- ========== 2. 躯干（图片，圆角矩形裁剪）==========
+        local tt = skin.torsoTransform
+        nvgSave(nvg_)
+        nvgTranslate(nvg_, sx + tt.offsetX, torsoY + tt.offsetY)
+        nvgRotate(nvg_, math.rad(tt.rotation))
+        nvgScale(nvg_, tt.scale, tt.scale)
+
+        local halfTW = torsoW / 2
+        local halfTH = torsoH / 2
+        local cornerR = torsoW * 0.15
+
+        if skin.torsoImg > 0 then
+            nvgBeginPath(nvg_)
+            nvgRoundedRect(nvg_, -halfTW, -halfTH, torsoW, torsoH, cornerR)
+            local imgPaint
+            if facing < 0 then
+                imgPaint = nvgImagePattern(nvg_, halfTW, -halfTH, -torsoW, torsoH, 0, skin.torsoImg, 1.0)
+            else
+                imgPaint = nvgImagePattern(nvg_, -halfTW, -halfTH, torsoW, torsoH, 0, skin.torsoImg, 1.0)
+            end
+            nvgFillPaint(nvg_, imgPaint)
+            nvgFill(nvg_)
+        else
+            nvgBeginPath(nvg_)
+            nvgRoundedRect(nvg_, -halfTW, -halfTH, torsoW, torsoH, cornerR)
+            nvgFillColor(nvg_, nvgRGBA(ac[1], ac[2], ac[3], ac[4]))
+            nvgFill(nvg_)
+        end
+        nvgRestore(nvg_)
+
+        -- ========== 3. 手臂 + 手掌 ==========
+        local shoulderY = torsoY - torsoH * 0.3
+        local armOffsetX = torsoW / 2 + armW * 0.3
+        for side = -1, 1, 2 do
+            local armAngle = side == -1 and armSwing or -armSwing
+            local armCX = sx + side * armOffsetX
+
+            nvgSave(nvg_)
+            nvgTranslate(nvg_, armCX, shoulderY)
+            nvgRotate(nvg_, armAngle)
+
+            nvgBeginPath(nvg_)
+            nvgRoundedRect(nvg_, -armW / 2, 0, armW, armH, armW * 0.4)
+            nvgFillColor(nvg_, nvgRGBA(ac[1], ac[2], ac[3], ac[4]))
+            nvgFill(nvg_)
+
+            nvgBeginPath(nvg_)
+            nvgCircle(nvg_, 0, armH + handR * 0.5, handR)
+            nvgFillColor(nvg_, nvgRGBA(hc[1], hc[2], hc[3], hc[4]))
+            nvgFill(nvg_)
+
+            nvgRestore(nvg_)
+        end
+
+        -- ========== 4. 头部（图片，圆形裁剪）==========
+        local ht = skin.headTransform
+        nvgSave(nvg_)
+        nvgTranslate(nvg_, sx + ht.offsetX, headY + ht.offsetY)
+        nvgRotate(nvg_, math.rad(ht.rotation))
+        nvgScale(nvg_, ht.scale, ht.scale)
+
+        if skin.headImg > 0 then
+            nvgBeginPath(nvg_)
+            nvgCircle(nvg_, 0, 0, headR)
+            local headImgPaint
+            if facing < 0 then
+                headImgPaint = nvgImagePattern(nvg_, headR, -headR, -headR * 2, headR * 2, 0, skin.headImg, 1.0)
+            else
+                headImgPaint = nvgImagePattern(nvg_, -headR, -headR, headR * 2, headR * 2, 0, skin.headImg, 1.0)
+            end
+            nvgFillPaint(nvg_, headImgPaint)
+            nvgFill(nvg_)
+        else
+            nvgBeginPath(nvg_)
+            nvgCircle(nvg_, 0, 0, headR)
+            nvgFillColor(nvg_, nvgRGBA(hc[1], hc[2], hc[3], hc[4]))
+            nvgFill(nvg_)
+        end
+        nvgRestore(nvg_)
+
+    else
+        -- ========== 无皮肤回退：简单圆形 ==========
+        nvgBeginPath(nvg_)
+        nvgCircle(nvg_, sx, sy, r)
+        nvgFillColor(nvg_, nvgRGBA(c[1], c[2], c[3], c[4]))
+        nvgFill(nvg_)
+    end
+
+    -- ========== 速度线效果 ==========
+    if isMoving and onGround then
+        local lineDir = -facing
+        for l = 1, 3 do
+            local lx = sx + lineDir * (torsoW / 2 + 4 + l * 5)
+            local ly = sy - 4 + l * 5
+            local lineLen = 6 + (3 - l) * 3
+            nvgBeginPath(nvg_)
+            nvgMoveTo(nvg_, lx, ly)
+            nvgLineTo(nvg_, lx + lineDir * lineLen, ly)
+            nvgStrokeColor(nvg_, nvgRGBA(200, 200, 200, 150 - l * 40))
+            nvgStrokeWidth(nvg_, 1.5)
+            nvgStroke(nvg_)
+        end
+    end
+
+    -- ========== 跳跃气流效果 ==========
+    if inAir and velY > 2 then
+        for l = 1, 3 do
+            nvgBeginPath(nvg_)
+            nvgCircle(nvg_, sx - 6 + l * 6, hipY + legH + 8 + l * 4, 2 - l * 0.4)
+            nvgFillColor(nvg_, nvgRGBA(255, 255, 255, 120 - l * 30))
+            nvgFill(nvg_)
+        end
+    end
+
+    -- ========== 名字标签 ==========
+    nvgFontSize(nvg_, 14)
+    nvgFontFace(nvg_, "sans")
+    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+    nvgFillColor(nvg_, nvgRGBA(c[1], c[2], c[3], 255))
+    local nameY = skin and (headY - headR - 6) or (sy - r - 10)
+    nvgText(nvg_, sx, nameY, name, nil)
+end
+
+function DrawPlayers()
     for i, p in ipairs(players_) do
         local pos = p.node.position2D
         local sx, sy = PhysToScreen(pos.x, pos.y)
-        local r = CONFIG.PlayerRadius * ppu  -- 基准半径 20px
-        local c = p.config.color
-
-        -- 获取皮肤
         local skinIdx = p.config.skinIndex or 1
         local skin = skinsRuntime_[skinIdx]
 
-        -- 动画参数
+        -- 计算动画参数
         local limbSwing = 0
         local armSwing = 0
         local inAir = not p.onGround
-
         if inAir then
             limbSwing = 0.35
             armSwing = -0.4
@@ -1244,178 +1381,19 @@ function DrawPlayers()
             armSwing = -math.sin(p.animTime) * 0.4
         end
 
-        -- 部件尺寸（基于文档比例，r=20px 基准）
-        local headR = r * 0.75          -- 头部半径 15px
-        local torsoW = r * 1.8          -- 躯干宽 36px
-        local torsoH = r * 2.0          -- 躯干高 40px
-        local armW = r * 0.28           -- 手臂宽 5.6px
-        local armH = r * 0.85           -- 手臂高 17px
-        local handR = r * 0.17          -- 手掌半径 3.4px
-        local legW = r * 0.32           -- 腿宽 6.4px
-        local legH = r * 0.9            -- 腿高 18px
-        local shoeW = r * 0.45          -- 鞋宽 9px
-        local shoeH = r * 0.26          -- 鞋高 5.1px
-
-        -- 身体中心偏移（物理体中心对齐躯干中心）
-        local torsoY = sy                           -- 躯干中心 = 物理中心
-        local headY = torsoY - torsoH * 0.35 - headR  -- 头部与躯干重叠35%
-        local hipY = torsoY + torsoH * 0.45         -- 腿部起始
-
-        -- 使用皮肤渲染还是纯色回退
-        if skin then
-            local ac = skin.armColor
-            local hc = skin.handColor
-            local lc = skin.legColor
-            local sc = skin.shoeColor
-
-            -- ========== 1. 腿部 + 鞋子（最底层）==========
-            local legSpacing = torsoW * 0.22
-            for side = -1, 1, 2 do
-                local legAngle = side == -1 and limbSwing or -limbSwing
-                local legCX = sx + side * legSpacing
-
-                nvgSave(nvg_)
-                nvgTranslate(nvg_, legCX, hipY)
-                nvgRotate(nvg_, legAngle)
-
-                -- 腿（圆角矩形）
-                nvgBeginPath(nvg_)
-                nvgRoundedRect(nvg_, -legW / 2, 0, legW, legH, legW * 0.3)
-                nvgFillColor(nvg_, nvgRGBA(lc[1], lc[2], lc[3], lc[4]))
-                nvgFill(nvg_)
-
-                -- 鞋子（圆角矩形，在腿底部）
-                nvgBeginPath(nvg_)
-                nvgRoundedRect(nvg_, -shoeW / 2, legH - shoeH * 0.3, shoeW, shoeH, shoeH * 0.3)
-                nvgFillColor(nvg_, nvgRGBA(sc[1], sc[2], sc[3], sc[4]))
-                nvgFill(nvg_)
-
-                nvgRestore(nvg_)
-            end
-
-            -- ========== 2. 躯干（图片，圆角矩形裁剪）==========
-            local tt = skin.torsoTransform
-            nvgSave(nvg_)
-            nvgTranslate(nvg_, sx + tt.offsetX, torsoY + tt.offsetY)
-            nvgRotate(nvg_, math.rad(tt.rotation))
-            nvgScale(nvg_, tt.scale, tt.scale)
-
-            local halfTW = torsoW / 2
-            local halfTH = torsoH / 2
-            local cornerR = torsoW * 0.15
-
-            if skin.torsoImg > 0 then
-                nvgBeginPath(nvg_)
-                nvgRoundedRect(nvg_, -halfTW, -halfTH, torsoW, torsoH, cornerR)
-                local imgPaint
-                if p.facing < 0 then
-                    imgPaint = nvgImagePattern(nvg_, halfTW, -halfTH, -torsoW, torsoH, 0, skin.torsoImg, 1.0)
-                else
-                    imgPaint = nvgImagePattern(nvg_, -halfTW, -halfTH, torsoW, torsoH, 0, skin.torsoImg, 1.0)
-                end
-                nvgFillPaint(nvg_, imgPaint)
-                nvgFill(nvg_)
-            else
-                nvgBeginPath(nvg_)
-                nvgRoundedRect(nvg_, -halfTW, -halfTH, torsoW, torsoH, cornerR)
-                nvgFillColor(nvg_, nvgRGBA(ac[1], ac[2], ac[3], ac[4]))
-                nvgFill(nvg_)
-            end
-            nvgRestore(nvg_)
-
-            -- ========== 3. 手臂 + 手掌 ==========
-            local shoulderY = torsoY - torsoH * 0.3
-            local armOffsetX = torsoW / 2 + armW * 0.3
-            for side = -1, 1, 2 do
-                local armAngle = side == -1 and armSwing or -armSwing
-                local armCX = sx + side * armOffsetX
-
-                nvgSave(nvg_)
-                nvgTranslate(nvg_, armCX, shoulderY)
-                nvgRotate(nvg_, armAngle)
-
-                -- 手臂（圆角矩形）
-                nvgBeginPath(nvg_)
-                nvgRoundedRect(nvg_, -armW / 2, 0, armW, armH, armW * 0.4)
-                nvgFillColor(nvg_, nvgRGBA(ac[1], ac[2], ac[3], ac[4]))
-                nvgFill(nvg_)
-
-                -- 手掌（圆形）
-                nvgBeginPath(nvg_)
-                nvgCircle(nvg_, 0, armH + handR * 0.5, handR)
-                nvgFillColor(nvg_, nvgRGBA(hc[1], hc[2], hc[3], hc[4]))
-                nvgFill(nvg_)
-
-                nvgRestore(nvg_)
-            end
-
-            -- ========== 4. 头部（图片，圆形裁剪）==========
-            local ht = skin.headTransform
-            nvgSave(nvg_)
-            nvgTranslate(nvg_, sx + ht.offsetX, headY + ht.offsetY)
-            nvgRotate(nvg_, math.rad(ht.rotation))
-            nvgScale(nvg_, ht.scale, ht.scale)
-
-            if skin.headImg > 0 then
-                nvgBeginPath(nvg_)
-                nvgCircle(nvg_, 0, 0, headR)
-                local headImgPaint
-                if p.facing < 0 then
-                    headImgPaint = nvgImagePattern(nvg_, headR, -headR, -headR * 2, headR * 2, 0, skin.headImg, 1.0)
-                else
-                    headImgPaint = nvgImagePattern(nvg_, -headR, -headR, headR * 2, headR * 2, 0, skin.headImg, 1.0)
-                end
-                nvgFillPaint(nvg_, headImgPaint)
-                nvgFill(nvg_)
-            else
-                nvgBeginPath(nvg_)
-                nvgCircle(nvg_, 0, 0, headR)
-                nvgFillColor(nvg_, nvgRGBA(hc[1], hc[2], hc[3], hc[4]))
-                nvgFill(nvg_)
-            end
-            nvgRestore(nvg_)
-
-        else
-            -- ========== 无皮肤回退：简单圆形 ==========
-            nvgBeginPath(nvg_)
-            nvgCircle(nvg_, sx, sy, r)
-            nvgFillColor(nvg_, nvgRGBA(c[1], c[2], c[3], c[4]))
-            nvgFill(nvg_)
-        end
-
-        -- ========== 速度线效果 ==========
-        if p.isMoving and p.onGround then
-            local lineDir = -p.facing
-            for l = 1, 3 do
-                local lx = sx + lineDir * (torsoW / 2 + 4 + l * 5)
-                local ly = sy - 4 + l * 5
-                local lineLen = 6 + (3 - l) * 3
-                nvgBeginPath(nvg_)
-                nvgMoveTo(nvg_, lx, ly)
-                nvgLineTo(nvg_, lx + lineDir * lineLen, ly)
-                nvgStrokeColor(nvg_, nvgRGBA(200, 200, 200, 150 - l * 40))
-                nvgStrokeWidth(nvg_, 1.5)
-                nvgStroke(nvg_)
-            end
-        end
-
-        -- ========== 跳跃气流效果 ==========
-        if inAir and p.velY > 2 then
-            for l = 1, 3 do
-                nvgBeginPath(nvg_)
-                nvgCircle(nvg_, sx - 6 + l * 6, hipY + legH + 8 + l * 4, 2 - l * 0.4)
-                nvgFillColor(nvg_, nvgRGBA(255, 255, 255, 120 - l * 30))
-                nvgFill(nvg_)
-            end
-        end
-
-        -- ========== 名字标签 ==========
-        nvgFontSize(nvg_, 14)
-        nvgFontFace(nvg_, "sans")
-        nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
-        nvgFillColor(nvg_, nvgRGBA(c[1], c[2], c[3], 255))
-        local nameY = skin and (headY - headR - 6) or (sy - r - 10)
-        nvgText(nvg_, sx, nameY, p.config.name, nil)
+        DrawSinglePlayer({
+            sx = sx, sy = sy,
+            color = p.config.color,
+            skin = skin,
+            facing = p.facing,
+            limbSwing = limbSwing,
+            armSwing = armSwing,
+            inAir = inAir,
+            isMoving = p.isMoving,
+            onGround = p.onGround,
+            velY = p.velY or 0,
+            name = p.config.name,
+        })
     end
 end
 
@@ -1457,64 +1435,125 @@ end
 function DrawShowPhoto()
     if gameState_ ~= "showPhoto" then return end
 
-    -- 相机已推进到拍照区域，viewport 就是"照片内容"
-    -- NanoVG 叠加拍立得相框效果
-
-    -- 拍立得相框参数（按屏幕比例计算）
-    local borderLR = math.floor(screenW_ * 0.06)        -- 左右边框 ~6%
-    local borderTop = math.floor(screenH_ * 0.06)       -- 上边框 ~6%
-    local borderBottom = math.floor(screenH_ * 0.14)    -- 下边框大一些（放文字）
-
-    -- 淡入动画
-    local progress = math.min(1.0, (1.5 - showPhotoTimer_) / 0.15)
+    -- 淡入动画（0.3秒淡入）
+    local progress = math.min(1.0, (2.5 - showPhotoTimer_) / 0.3)
 
     nvgSave(nvg_)
 
-    -- 照片内容区域（中间不遮挡，保留游戏画面）
-    local photoX = borderLR
-    local photoY = borderTop
-    local photoW = screenW_ - borderLR * 2
-    local photoH = screenH_ - borderTop - borderBottom
-
-    -- 1) 半透明黑色遮罩四边（突出中间照片区域）
-    local maskAlpha = math.floor(180 * progress)
+    -- 1) 全屏半透明黑色遮罩
+    local maskAlpha = math.floor(200 * progress)
+    nvgBeginPath(nvg_)
+    nvgRect(nvg_, 0, 0, screenW_, screenH_)
     nvgFillColor(nvg_, nvgRGBA(0, 0, 0, maskAlpha))
-    -- 上
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, 0, 0, screenW_, photoY)
-    nvgFill(nvg_)
-    -- 下
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, 0, photoY + photoH, screenW_, screenH_ - photoY - photoH)
-    nvgFill(nvg_)
-    -- 左
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, 0, photoY, photoX, photoH)
-    nvgFill(nvg_)
-    -- 右
-    nvgBeginPath(nvg_)
-    nvgRect(nvg_, photoX + photoW, photoY, screenW_ - photoX - photoW, photoH)
     nvgFill(nvg_)
 
-    -- 2) 白色相框边（拍立得风格）
-    local frameBorder = 4
+    -- 2) 计算拍立得照片展示区域（拍照区域的宽高比）
+    local zoneAspect = photoZone_.width / photoZone_.height
+
+    -- 照片最大占屏幕 65% 宽、50% 高
+    local maxPhotoW = screenW_ * 0.65
+    local maxPhotoH = screenH_ * 0.50
+    local photoW, photoH
+
+    if maxPhotoW / zoneAspect <= maxPhotoH then
+        photoW = maxPhotoW
+        photoH = maxPhotoW / zoneAspect
+    else
+        photoH = maxPhotoH
+        photoW = maxPhotoH * zoneAspect
+    end
+
+    -- 拍立得相框：上/左/右白边等宽，下方白边更大（放文字）
+    local framePad = math.floor(photoW * 0.05)
+    local frameBottom = math.floor(photoH * 0.25)
+
+    local totalW = photoW + framePad * 2
+    local totalH = photoH + framePad + frameBottom
+
+    -- 居中定位（稍偏上）
+    local frameX = (screenW_ - totalW) / 2
+    local frameY = (screenH_ - totalH) / 2 - screenH_ * 0.03
+
+    -- 弹入动画（从稍下方弹起）
+    local offsetY = (1.0 - progress) * 40
+    frameY = frameY + offsetY
+
+    -- 3) 相框阴影
     nvgBeginPath(nvg_)
-    nvgRect(nvg_, photoX - frameBorder, photoY - frameBorder,
-            photoW + frameBorder * 2, photoH + frameBorder * 2)
-    nvgStrokeColor(nvg_, nvgRGBA(255, 255, 255, math.floor(240 * progress)))
-    nvgStrokeWidth(nvg_, frameBorder)
+    nvgRoundedRect(nvg_, frameX + 4, frameY + 5, totalW, totalH, 5)
+    nvgFillColor(nvg_, nvgRGBA(0, 0, 0, math.floor(80 * progress)))
+    nvgFill(nvg_)
+
+    -- 4) 绘制白色相框背景（拍立得风格）
+    nvgBeginPath(nvg_)
+    nvgRoundedRect(nvg_, frameX, frameY, totalW, totalH, 5)
+    nvgFillColor(nvg_, nvgRGBA(255, 255, 255, math.floor(250 * progress)))
+    nvgFill(nvg_)
+
+    -- 5) 在相框内绘制游戏快照（裁剪到照片区域）
+    local photoX = frameX + framePad
+    local photoY = frameY + framePad
+
+    -- 使用 scissor 裁剪到照片区域
+    nvgScissor(nvg_, photoX, photoY, photoW, photoH)
+
+    -- 计算缩放：将拍照区域（世界坐标）映射到照片像素区域
+    -- 拍照区域中心的屏幕坐标
+    local zoneCenterSX, zoneCenterSY = PhysToScreen(photoZone_.x, photoZone_.y)
+    -- 拍照区域在当前屏幕上的像素尺寸
+    local ppu = GetPixelsPerUnit()
+    local zoneScreenW = photoZone_.width * ppu
+    local zoneScreenH = photoZone_.height * ppu
+
+    -- 缩放比例：将拍照区域屏幕尺寸映射到照片尺寸
+    local scaleX = photoW / zoneScreenW
+    local scaleY = photoH / zoneScreenH
+    local scale = math.min(scaleX, scaleY)
+
+    -- 变换：先平移使拍照区域中心对齐照片中心，再缩放
+    local photoCenterX = photoX + photoW / 2
+    local photoCenterY = photoY + photoH / 2
+
+    nvgSave(nvg_)
+    nvgTranslate(nvg_, photoCenterX, photoCenterY)
+    nvgScale(nvg_, scale, scale)
+    nvgTranslate(nvg_, -zoneCenterSX, -zoneCenterSY)
+
+    -- 重绘背景
+    DrawBackground()
+    -- 重绘平台
+    DrawPlatforms()
+
+    -- 绘制拍照区域边框（固定alpha，不闪烁）
+    local zsx, zsy = PhysToScreen(photoZone_.x, photoZone_.y)
+    local zpw = photoZone_.width * ppu
+    local zph = photoZone_.height * ppu
+    nvgBeginPath(nvg_)
+    nvgRect(nvg_, zsx - zpw/2, zsy - zph/2, zpw, zph)
+    nvgFillColor(nvg_, nvgRGBA(255, 220, 50, 30))
+    nvgFill(nvg_)
+    nvgBeginPath(nvg_)
+    nvgRect(nvg_, zsx - zpw/2, zsy - zph/2, zpw, zph)
+    nvgStrokeColor(nvg_, nvgRGBA(255, 220, 50, 160))
+    nvgStrokeWidth(nvg_, 3)
     nvgStroke(nvg_)
 
-    -- 5) 照片内暗角效果（四边渐暗）
+    -- 绘制快照中的玩家（使用保存的位置）
+    DrawPlayersSnapshot()
+
+    nvgRestore(nvg_)
+    -- 取消 scissor
+    nvgResetScissor(nvg_)
+
+    -- 6) 照片内暗角效果
     local vigAlpha = math.floor(40 * progress)
-    -- 上暗角
     nvgBeginPath(nvg_)
     nvgRect(nvg_, photoX, photoY, photoW, photoH * 0.15)
     local topVig = nvgLinearGradient(nvg_, photoX, photoY, photoX, photoY + photoH * 0.15,
         nvgRGBA(0, 0, 0, vigAlpha), nvgRGBA(0, 0, 0, 0))
     nvgFillPaint(nvg_, topVig)
     nvgFill(nvg_)
-    -- 下暗角
+
     nvgBeginPath(nvg_)
     nvgRect(nvg_, photoX, photoY + photoH * 0.85, photoW, photoH * 0.15)
     local botVig = nvgLinearGradient(nvg_, photoX, photoY + photoH * 0.85, photoX, photoY + photoH,
@@ -1522,9 +1561,9 @@ function DrawShowPhoto()
     nvgFillPaint(nvg_, botVig)
     nvgFill(nvg_)
 
-    -- 6) 底部结果文字（白色大字，在黑色遮罩区域上）
-    local textY = photoY + photoH + borderBottom * 0.5
-    nvgFontSize(nvg_, math.max(22, math.floor(screenH_ * 0.038)))
+    -- 7) 底部结果文字（在拍立得白色区域内）
+    local textY = photoY + photoH + frameBottom * 0.5
+    nvgFontSize(nvg_, math.max(18, math.floor(frameBottom * 0.35)))
     nvgFontFace(nvg_, "sans")
     nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
 
@@ -1533,20 +1572,59 @@ function DrawShowPhoto()
         for _, idx in ipairs(roundResult_) do
             table.insert(names, players_[idx].config.name)
         end
-        nvgFillColor(nvg_, nvgRGBA(100, 255, 100, math.floor(255 * progress)))
-        nvgText(nvg_, screenW_ / 2, textY, "📸 " .. table.concat(names, " & ") .. " 入镜! +1", nil)
+        nvgFillColor(nvg_, nvgRGBA(40, 160, 60, math.floor(255 * progress)))
+        nvgText(nvg_, screenW_ / 2, textY, table.concat(names, " & ") .. " 入镜! +1", nil)
     else
-        nvgFillColor(nvg_, nvgRGBA(255, 120, 120, math.floor(255 * progress)))
-        nvgText(nvg_, screenW_ / 2, textY, "😢 没人入镜!", nil)
+        nvgFillColor(nvg_, nvgRGBA(200, 80, 80, math.floor(255 * progress)))
+        nvgText(nvg_, screenW_ / 2, textY, "没人入镜!", nil)
     end
 
-    -- 7) 顶部 "PHOTO" 小标签（白色，在黑色遮罩区域上）
-    nvgFontSize(nvg_, 14)
-    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(nvg_, nvgRGBA(255, 255, 255, math.floor(200 * progress)))
-    nvgText(nvg_, screenW_ / 2, photoY * 0.5, "📷 PHOTO", nil)
+    -- 8) 顶部 "PHOTO" 标签
+    nvgFontSize(nvg_, 13)
+    nvgTextAlign(nvg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+    nvgFillColor(nvg_, nvgRGBA(255, 255, 255, math.floor(180 * progress)))
+    nvgText(nvg_, screenW_ / 2, frameY - 6, "PHOTO", nil)
 
     nvgRestore(nvg_)
+end
+
+--- 绘制快照中的玩家（使用保存的位置而非实时位置）
+function DrawPlayersSnapshot()
+    for i, snap in ipairs(photoSnapshot_) do
+        local p = players_[i]
+        if not p then break end
+
+        local sx, sy = PhysToScreen(snap.x, snap.y)
+        local skinIdx = p.config.skinIndex or 1
+        local skin = skinsRuntime_[skinIdx]
+
+        -- 使用保存的动画状态还原拍照瞬间的姿态
+        local limbSwing = 0
+        local armSwing = 0
+        local inAir = not snap.onGround
+
+        if inAir then
+            limbSwing = 0.35
+            armSwing = -0.4
+        elseif snap.isMoving then
+            limbSwing = math.sin(snap.animTime) * 0.5
+            armSwing = -math.sin(snap.animTime) * 0.4
+        end
+
+        DrawSinglePlayer({
+            sx = sx, sy = sy,
+            color = p.config.color,
+            skin = skin,
+            facing = snap.facing,
+            limbSwing = limbSwing,
+            armSwing = armSwing,
+            inAir = inAir,
+            isMoving = snap.isMoving,
+            onGround = snap.onGround,
+            velY = 0,
+            name = p.config.name,
+        })
+    end
 end
 
 function DrawBulletin()
