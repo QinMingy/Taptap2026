@@ -21,6 +21,28 @@
       "shoeColor": "#2A3A4CFF",
       "headTransform": { "scale": 1.0, "offsetX": 0, "offsetY": 0, "rotation": 0 },
       "torsoTransform": { "scale": 1.0, "offsetX": 0, "offsetY": 0, "rotation": 0 }
+    },
+    {
+      "name": "danding",
+      "headImage": "image/Charactor/danding/head_danding.png",
+      "torsoImage": "image/Charactor/danding/body_danding.png",
+      "armColor": "#6B2A2AFF",
+      "handColor": "#F5D2AAFF",
+      "legColor": "#2A2A2AFF",
+      "shoeColor": "#1A1A1AFF",
+      "headTransform": { "scale": 1.0, "offsetX": 0, "offsetY": 0, "rotation": 0 },
+      "torsoTransform": { "scale": 1.0, "offsetX": 0, "offsetY": 0, "rotation": 0 }
+    },
+    {
+      "name": "Vergil",
+      "headImage": "image/Charactor/Vergil/head_vergil.png",
+      "torsoImage": "image/Charactor/Vergil/body_vergil.png",
+      "armColor": "#2A3050FF",
+      "handColor": "#F5D2AAFF",
+      "legColor": "#1E1E28FF",
+      "shoeColor": "#141418FF",
+      "headTransform": { "scale": 1.0, "offsetX": 0, "offsetY": 0, "rotation": 0 },
+      "torsoTransform": { "scale": 1.0, "offsetX": 0, "offsetY": 0, "rotation": 0 }
     }
   ]
 }

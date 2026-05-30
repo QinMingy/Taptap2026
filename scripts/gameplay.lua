@@ -16,6 +16,15 @@ local M = {}
 -- ============================================================================
 local coins_ = {}         -- 场上金币列表 { {x, y, collected} }
 local playerCoins_ = {}   -- 每个玩家本轮收集的金币数
+local coinTime_ = 0       -- 金币动画计时器
+local coinParticles_ = {} -- 金币拾取粒子 { {x, y, vx, vy, life, maxLife, size, color} }
+
+-- ============================================================================
+-- 拔河系统状态
+-- ============================================================================
+local tugTeamClicks_ = { 0, 0 }       -- 各队总点击数 [1]=左队(team1), [2]=右队(team2)
+local tugPlayerClicks_ = {}            -- 各玩家个人点击数
+local tugPlayerPressed_ = {}           -- 玩家按键是否处于按下状态（防长按）
 
 -- ============================================================================
 -- 解锁系统
@@ -119,11 +128,59 @@ function M.ClearCoins()
     end
 end
 
+--- 生成金币拾取粒子
+local function SpawnCoinParticles(cx, cy)
+    local count = 8
+    for i = 1, count do
+        local angle = (i / count) * math.pi * 2 + math.random() * 0.5
+        local speed = 1.5 + math.random() * 2.0
+        table.insert(coinParticles_, {
+            x = cx, y = cy,
+            vx = math.cos(angle) * speed,
+            vy = math.sin(angle) * speed + 1.5,
+            life = 0.5 + math.random() * 0.3,
+            maxLife = 0.5 + math.random() * 0.3,
+            size = 0.08 + math.random() * 0.06,
+        })
+    end
+end
+
+--- 更新金币动画时间和粒子（每帧调用）
+function M.UpdateCoinTime(dt)
+    coinTime_ = coinTime_ + dt
+    -- 更新粒子
+    local i = 1
+    while i <= #coinParticles_ do
+        local p = coinParticles_[i]
+        p.life = p.life - dt
+        if p.life <= 0 then
+            table.remove(coinParticles_, i)
+        else
+            p.x = p.x + p.vx * dt
+            p.y = p.y + p.vy * dt
+            p.vy = p.vy - 5.0 * dt  -- 重力
+            i = i + 1
+        end
+    end
+end
+
+--- 获取金币动画时间
+function M.GetCoinTime()
+    return coinTime_
+end
+
+--- 获取金币粒子列表（渲染用）
+function M.GetCoinParticles()
+    return coinParticles_
+end
+
 --- 更新金币拾取检测（每帧调用）
+--- @return boolean collected 本帧是否有金币被拾取
 function M.UpdateCoinCollection(players, currentGameplayIndex)
     local gp = GAMEPLAY_DATA[currentGameplayIndex]
-    if gp.scoringRule ~= "coin_top3" then return end
+    if gp.scoringRule ~= "coin_top3" then return false end
 
+    local collected = false
     for i, p in ipairs(players) do
         local px, py = p.node.position2D.x, p.node.position2D.y
         for _, coin in ipairs(coins_) do
@@ -134,10 +191,13 @@ function M.UpdateCoinCollection(players, currentGameplayIndex)
                 if dist < Cfg.COIN_COLLECT_DIST then
                     coin.collected = true
                     playerCoins_[i] = (playerCoins_[i] or 0) + 1
+                    SpawnCoinParticles(coin.x, coin.y)
+                    collected = true
                 end
             end
         end
     end
+    return collected
 end
 
 --- 获取金币列表（渲染用）
@@ -181,17 +241,87 @@ function M.CalculateScorers(playersInZone, currentGameplayIndex)
     end
 end
 
+-- ============================================================================
+-- 拔河玩法
+-- ============================================================================
+
+--- 初始化拔河系统
+function M.InitTugOfWar(players, playerTeam)
+    tugTeamClicks_ = { 0, 0 }
+    tugPlayerClicks_ = {}
+    tugPlayerPressed_ = {}
+    for i = 1, #players do
+        tugPlayerClicks_[i] = 0
+        tugPlayerPressed_[i] = false
+    end
+end
+
+--- 更新拔河点击检测（每帧调用）
+--- @param players table 玩家列表
+--- @param playerTeam table 玩家→队伍映射
+function M.UpdateTugOfWar(players, playerTeam)
+    for i, p in ipairs(players) do
+        local teamIdx = playerTeam[i]
+        if teamIdx then
+            -- 三个键都可以按，每个键独立计数
+            local keys = { p.config.keys.left, p.config.keys.right, p.config.keys.jump }
+            if not tugPlayerPressed_[i] then tugPlayerPressed_[i] = {} end
+
+            for _, key in ipairs(keys) do
+                local isDown = input:GetKeyDown(key)
+                if isDown and not tugPlayerPressed_[i][key] then
+                    tugTeamClicks_[teamIdx] = tugTeamClicks_[teamIdx] + 1
+                    tugPlayerClicks_[i] = (tugPlayerClicks_[i] or 0) + 1
+                    tugPlayerPressed_[i][key] = true
+                elseif not isDown then
+                    tugPlayerPressed_[i][key] = false
+                end
+            end
+        end
+    end
+end
+
+--- 获取各队点击数（渲染用）
+function M.GetTugTeamClicks()
+    return tugTeamClicks_
+end
+
+--- 获取各玩家个人点击数（渲染用）
+function M.GetTugPlayerClicks()
+    return tugPlayerClicks_
+end
+
+--- 拔河结算：返回获胜队伍索引（1或2），平局返回0
+function M.GetTugWinner()
+    if tugTeamClicks_[1] > tugTeamClicks_[2] then
+        return 1
+    elseif tugTeamClicks_[2] > tugTeamClicks_[1] then
+        return 2
+    else
+        return 0  -- 平局
+    end
+end
+
+-- ============================================================================
+-- 生命周期
+-- ============================================================================
+
 --- 玩法在准备阶段开始时的初始化（由状态机调用）
-function M.OnPrepStart(currentGameplayIndex, currentMapLevel)
+function M.OnPrepStart(currentGameplayIndex, currentMapLevel, players, playerTeam)
     local gp = GAMEPLAY_DATA[currentGameplayIndex]
     if gp.scoringRule == "coin_top3" then
         M.SpawnCoins(currentMapLevel)
+    elseif gp.scoringRule == "tug_of_war" then
+        M.InitTugOfWar(players or {}, playerTeam or {})
     end
 end
 
 --- 轮次结束时的清理（由状态机调用）
 function M.OnRoundEnd()
     M.ClearCoins()
+    tugTeamClicks_ = { 0, 0 }
+    tugPlayerClicks_ = {}
+    tugPlayerPressed_ = {}
 end
 
 return M

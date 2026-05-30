@@ -13,13 +13,17 @@ local M = {}
 -- ============================================================================
 M.skinEditorOpen = false
 M.terrainEditorOpen = false
+M.gameplayGMOpen = false
 M.editorMenuOpen = false
 M.skinEditorAnimTime = 0  -- 预览动画计时器
+M.gmForceGameplay = nil   -- 强制玩法索引（生效一次后自动清除）
 
 -- 内部状态
 local skinEditorPanel_ = nil
 local editorMenuPanel_ = nil
 local terrainEditorPanel_ = nil
+local gameplayGMPanel_ = nil
+local gameplayGMButtons_ = {}  -- 玩法按钮引用列表
 local exportPopup_ = nil
 
 -- 地形编辑器拖拽状态
@@ -51,6 +55,10 @@ function M.ToggleEditorMenu()
     end
     if M.skinEditorOpen then
         M.ToggleSkinEditor()
+        return
+    end
+    if M.gameplayGMOpen then
+        M.ToggleGameplayGM()
         return
     end
 
@@ -94,6 +102,14 @@ function M.CreateEditorMenu()
                             M.editorMenuOpen = false
                             editorMenuPanel_:SetVisible(false)
                             M.ToggleSkinEditor()
+                        end
+                    },
+                    UI.Button {
+                        text = "玩法 GM", variant = "outline", width = "100%", height = 38,
+                        onClick = function()
+                            M.editorMenuOpen = false
+                            editorMenuPanel_:SetVisible(false)
+                            M.ToggleGameplayGM()
                         end
                     },
                 }
@@ -256,23 +272,28 @@ function M.CreateSkinEditor()
                                     UI.Button {
                                         text = "保存配置", variant = "primary", height = 30, marginTop = 12,
                                         onClick = function()
-                                            local data = {
-                                                playerScale = G.playerScale,
-                                                capsuleRadius = G.capsuleRadius,
-                                                capsuleHeight = G.capsuleHeight,
-                                                headTransform = skin.headTransform,
-                                                torsoTransform = skin.torsoTransform,
-                                                armTransform = skin.armTransform,
-                                                legTransform = skin.legTransform,
-                                            }
-                                            local jsonStr = cjson.encode(data)
-                                            local saveFile = File("skin-editor.json", FILE_WRITE)
-                                            if saveFile and saveFile:IsOpen() then
-                                                saveFile:WriteString(jsonStr)
-                                                saveFile:Close()
-                                                print("[SkinEditor] Config saved to skin-editor.json")
-                                            else
-                                                print("[SkinEditor] Failed to save config!")
+                                            local ok, err = pcall(function()
+                                                local data = {
+                                                    playerScale = G.playerScale,
+                                                    capsuleRadius = G.capsuleRadius,
+                                                    capsuleHeight = G.capsuleHeight,
+                                                    headTransform = skin.headTransform,
+                                                    torsoTransform = skin.torsoTransform,
+                                                    armTransform = skin.armTransform,
+                                                    legTransform = skin.legTransform,
+                                                }
+                                                local jsonStr = cjson.encode(data)
+                                                local saveFile = File("skin-editor.json", FILE_WRITE)
+                                                if saveFile and saveFile:IsOpen() then
+                                                    saveFile:WriteString(jsonStr)
+                                                    saveFile:Close()
+                                                    print("[SkinEditor] Config saved to skin-editor.json")
+                                                else
+                                                    print("[SkinEditor] ERROR: Failed to open file for writing!")
+                                                end
+                                            end)
+                                            if not ok then
+                                                print("[SkinEditor] ERROR saving: " .. tostring(err))
                                             end
                                         end
                                     },
@@ -663,6 +684,91 @@ function M.DrawSkinEditorPreview()
         color = {200, 200, 200, 255},
         name = G.skinsRuntime[1].name,
     })
+end
+
+-- ============================================================================
+-- 玩法 GM
+-- ============================================================================
+
+--- 更新按钮样式（选中高亮）
+local function RefreshGMButtons()
+    for i, btn in ipairs(gameplayGMButtons_) do
+        if M.gmForceGameplay == i then
+            btn:SetVariant("primary")
+            btn:SetText(string.format("✓ 玩法%d：%s", i, Cfg.GAMEPLAY_DATA[i].name))
+        else
+            btn:SetVariant("outline")
+            btn:SetText(string.format("玩法%d：%s", i, Cfg.GAMEPLAY_DATA[i].name))
+        end
+    end
+end
+
+function M.ToggleGameplayGM()
+    M.gameplayGMOpen = not M.gameplayGMOpen
+    if gameplayGMPanel_ then
+        gameplayGMPanel_:SetVisible(M.gameplayGMOpen)
+    end
+    -- 打开时刷新按钮高亮状态
+    if M.gameplayGMOpen then
+        RefreshGMButtons()
+    end
+end
+
+function M.CreateGameplayGM()
+    local GAMEPLAY_DATA = Cfg.GAMEPLAY_DATA
+    gameplayGMButtons_ = {}
+
+    local buttonChildren = {}
+    for i, gp in ipairs(GAMEPLAY_DATA) do
+        local idx = i  -- 闭包捕获
+        local btn = UI.Button {
+            text = string.format("玩法%d：%s", idx, gp.name),
+            variant = "outline",
+            width = "100%",
+            height = 34,
+            onClick = function(self)
+                -- toggle：再次点击取消
+                if M.gmForceGameplay == idx then
+                    M.gmForceGameplay = nil
+                else
+                    M.gmForceGameplay = idx
+                end
+                RefreshGMButtons()
+                print(string.format("[GM] 强制玩法: %s",
+                    M.gmForceGameplay and GAMEPLAY_DATA[M.gmForceGameplay].name or "无（正常随机）"))
+            end
+        }
+        gameplayGMButtons_[idx] = btn
+        table.insert(buttonChildren, btn)
+    end
+
+    -- 状态提示
+    local hintChildren = {
+        UI.Label { text = "玩法 GM (Tab 关闭)", fontSize = 14, fontColor = {255, 180, 80, 255} },
+        UI.Label { text = "选中后下一轮强制该玩法\n再次点击取消", fontSize = 11, fontColor = {160, 160, 160, 255} },
+    }
+    -- 合并按钮
+    for _, child in ipairs(buttonChildren) do
+        table.insert(hintChildren, child)
+    end
+
+    gameplayGMPanel_ = UI.Panel {
+        id = "gameplayGM",
+        position = "absolute",
+        top = 50, left = 10,
+        width = 220,
+        backgroundColor = {20, 20, 30, 220},
+        borderRadius = 8,
+        padding = 12,
+        gap = 8,
+        children = hintChildren,
+    }
+    gameplayGMPanel_:SetVisible(false)
+
+    local root = UI.FindById("root")
+    if root then
+        root:AddChild(gameplayGMPanel_)
+    end
 end
 
 return M
