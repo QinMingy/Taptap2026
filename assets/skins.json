@@ -12,13 +12,13 @@
       "torsoTransform": { "scale": 1.0, "offsetX": 0, "offsetY": 0, "rotation": 0 }
     },
     {
-      "name": "mgz",
-      "headImage": "image/Charactor/mgz/head_mgz.png",
-      "torsoImage": "image/Charactor/mgz/body_mgz.png",
-      "armColor": "#FFFFFFFF",
-      "handColor": "#F5D2AAFF",
-      "legColor": "#3A4A5CFF",
-      "shoeColor": "#2A3A4CFF",
+      "name": "mgz2",
+      "headImage": "image/Charactor/mgz2/head_mgz2.png",
+      "torsoImage": "image/Charactor/mgz2/body_mgz2.png",
+      "armColor": "#2A2A30FF",
+      "handColor": "#F0CDA0FF",
+      "legColor": "#2A2A30FF",
+      "shoeColor": "#1A1A1EFF",
       "headTransform": { "scale": 1.0, "offsetX": 0, "offsetY": 0, "rotation": 0 },
       "torsoTransform": { "scale": 1.0, "offsetX": 0, "offsetY": 0, "rotation": 0 }
     },

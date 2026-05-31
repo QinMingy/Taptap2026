@@ -83,14 +83,14 @@ M.PLAYERS = {
     {
         name = "P7",
         color = {220, 120, 180, 255},
-        keys = {left = KEY_7, jump = KEY_8, right = KEY_9},
+        keys = {left = KEY_F, jump = KEY_G, right = KEY_H},
         spawnX = 5,
         skinIndex = 3,
     },
     {
         name = "P8",
         color = {140, 220, 80, 255},
-        keys = {left = KEY_4, jump = KEY_5, right = KEY_6},
+        keys = {left = KEY_R, jump = KEY_T, right = KEY_Y},
         spawnX = 7,
         skinIndex = 4,
     },
@@ -128,11 +128,11 @@ M.GAMEPLAY_DATA = {
     {
         name = "拾取金币",
         weight = 20,
-        description = "照片内金币最高的3名玩家得分",
-        unlockThreshold = 3,
+        description = "拾取3枚金币并站在拍照区域内即可得分",
+        unlockThreshold = 2,
         resetPosition = false,
         prepTime = 1.0,
-        prepText = "抢金币",
+        prepText = "拾取金币！",
         photoZone = nil,
         rushTime = 5.0,
         scoringRule = "coin_top3",
@@ -141,7 +141,7 @@ M.GAMEPLAY_DATA = {
         name = "异形拍照",
         weight = 20,
         description = "注意拍照区域",
-        unlockThreshold = 4,
+        unlockThreshold = 3,
         resetPosition = false,
         prepTime = 1.0,
         prepText = "精准站位",
@@ -166,7 +166,7 @@ M.GAMEPLAY_DATA = {
         name = "镜头翻转",
         weight = 20,
         description = "在镜头翻转后仍然找到拍照区域",
-        unlockThreshold = 5,
+        unlockThreshold = 4,
         resetPosition = false,
         prepTime = 3.0,
         prepText = "视角颠倒",
@@ -179,7 +179,7 @@ M.GAMEPLAY_DATA = {
         name = "疯狂点击",
         weight = 20,
         description = "疯狂敲击键盘，次数更多的队伍得分",
-        unlockThreshold = 6,
+        unlockThreshold = 4,
         resetPosition = true,
         prepTime = 3.0,
         prepText = "疯狂点击！",
@@ -204,7 +204,7 @@ M.GAMEPLAY_DATA = {
         name = "真假相框",
         weight = 20,
         description = "同时出现两个拍照区域，只有一个是真的拍照区域",
-        unlockThreshold = 7,
+        unlockThreshold = 6,
         resetPosition = false,
         prepTime = 1.0,
         photoZone = nil,        -- 使用默认尺寸和 PHOTO_PRESETS
@@ -223,6 +223,32 @@ M.GAMEPLAY_DATA = {
         rushTime = 5.0,
         scoringRule = "normal",
         mapTilt = true,         -- 标记：该玩法启用地图倾斜
+    },
+    {
+        name = "放大药丸",
+        weight = 20,
+        description = "获取放大药丸，抢占拍照先机",
+        unlockThreshold = 5,
+        resetPosition = false,
+        prepTime = 3.0,
+        prepText = "拾取放大药丸！",
+        photoZone = nil,
+        rushTime = 5.0,
+        scoringRule = "normal",
+        enlargePill = true,     -- 标记：该玩法启用放大药丸
+    },
+    {
+        name = "躲避子弹",
+        weight = 20,
+        description = "躲避从天而降的弹幕，被击中将无法出现在照片中",
+        unlockThreshold = 6,
+        resetPosition = false,
+        prepTime = 5.0,
+        prepText = "躲避子弹！",
+        photoZone = nil,
+        rushTime = 5.0,
+        scoringRule = "normal",
+        dodgeBullet = true,     -- 标记：该玩法启用子弹躲避
     },
 }
 
@@ -295,5 +321,24 @@ M.PLAYER_VISUALS = {
 M.COIN_RADIUS = 0.25
 M.COIN_COLLECT_DIST = 0.6
 M.COIN_COUNT = 15
+
+-- ============================================================================
+-- 放大药丸配置
+-- ============================================================================
+M.PILL_COUNT = 2              -- 每轮刷新药丸数量
+M.PILL_RADIUS = 0.2           -- 药丸碰撞/显示半径（缩小）
+M.PILL_COLLECT_DIST = 0.5     -- 拾取距离
+M.PILL_ENLARGE_SCALE = 3.0    -- 放大目标倍率
+M.PILL_ENLARGE_DURATION = 2.0 -- 放大持续时间（秒）
+
+-- ============================================================================
+-- 子弹躲避配置
+-- ============================================================================
+M.BULLET_COUNT = 3            -- 子弹数量
+M.BULLET_RADIUS = 0.2         -- 子弹半径（约为玩家半径的一半）
+M.BULLET_SPEED = 4.5          -- 子弹速度（不要太快）
+M.BULLET_HIT_DIST = 0.55      -- 子弹命中玩家距离（子弹半径+玩家半径）
+M.BULLET_FLASH_DURATION = 0.8 -- 被击中后闪烁持续时间（秒）
+M.BULLET_FLASH_FREQ = 12      -- 闪烁频率（Hz）
 
 return M

@@ -57,13 +57,13 @@ local function LoadSkinsConfig()
             shoeColor = "#50505AFF",
         },
         {
-            name = "mgz",
-            headImage = "image/Charactor/mgz/head_mgz.png",
-            torsoImage = "image/Charactor/mgz/body_mgz.png",
-            armColor = "#FFFFFFFF",
-            handColor = "#F5D2AAFF",
-            legColor = "#3A4A5CFF",
-            shoeColor = "#2A3A4CFF",
+            name = "mgz2",
+            headImage = "image/Charactor/mgz2/head_mgz2.png",
+            torsoImage = "image/Charactor/mgz2/body_mgz2.png",
+            armColor = "#2A2A30FF",
+            handColor = "#F0CDA0FF",
+            legColor = "#2A2A30FF",
+            shoeColor = "#1A1A1EFF",
         },
         {
             name = "danding",
@@ -193,6 +193,7 @@ local countdown_ = 0
 local prepTimer_ = 0
 local flashTimer_ = 0
 local showPhotoTimer_ = 0
+
 local globalTime_ = 0  -- 全局累计时间（每帧累加dt，替代 os.clock()）
 local roundResult_ = {}
 local photoSnapshot_ = {}
@@ -213,10 +214,8 @@ local lobby_ = {
     },
     animTime = 0,
     xButtonRects = {},
-    -- 新选人界面：已落地玩家物理对象
-    lobbyPlayers = {},  -- [slotIndex] = { node, body, onGround, groundContacts, facing, ... }
-    -- 固定拍照区域（右侧）
-    photoZone = { x = 5.5, y = 0.5, width = CONFIG.PhotoWidth, height = CONFIG.PhotoHeight },
+    -- 固定拍照区域（右侧偏下，塔前区域）
+    photoZone = { x = 5.9, y = -1.6, width = CONFIG.PhotoWidth, height = CONFIG.PhotoHeight },
     -- 倒数计时
     countdown = 5.0,
     countdownActive = false,
@@ -261,6 +260,7 @@ local screenH_ = 720
 -- 音效
 local shutterSound_ = nil
 local coinPickupSound_ = nil
+local pillPickupSound_ = nil
 local jumpSound_ = nil
 local landSound_ = nil
 local readyConfirmSound_ = nil
@@ -352,6 +352,9 @@ local function SyncGameState()
     G.tugTeamClicks = Gameplay.GetTugTeamClicks()
     G.tugPlayerClicks = Gameplay.GetTugPlayerClicks()
     G.tugWinner = Gameplay.GetTugWinner()
+    G.bulletDestroyedPlayers = Gameplay.GetBulletDestroyedPlayers()
+    G.bulletFlashTimers = Gameplay.GetBulletFlashTimers()
+    G.bulletTime = Gameplay.GetBulletTime()
     G.getUnlockValue = function() return Gameplay.GetUnlockValue(teams_) end
     G.nextRoundPrepared = bulletin_.nextRoundPrepared or false
     G.globalTime = globalTime_
@@ -363,7 +366,7 @@ end
 
 function GetWinScore()
     local teamSize = math.max(1, #players_ // 2)
-    return teamSize * 20
+    return teamSize * 12
 end
 
 function GetUnlockValue()
@@ -460,6 +463,7 @@ function Start()
     -- 加载音效
     shutterSound_ = cache:GetResource("Sound", "audio/sfx/shutter.ogg")
     coinPickupSound_ = cache:GetResource("Sound", "audio/sfx/coin_pickup.ogg")
+    pillPickupSound_ = cache:GetResource("Sound", "audio/sfx/pill_pickup.ogg")
     jumpSound_ = cache:GetResource("Sound", "audio/sfx/jump.ogg")
     landSound_ = cache:GetResource("Sound", "audio/sfx/land.ogg")
     readyConfirmSound_ = cache:GetResource("Sound", "audio/sfx/ready_confirm.ogg")
@@ -467,15 +471,14 @@ function Start()
     CreateScene()
 
     -- 播放背景音乐（需在 CreateScene 之后）
-    local bgm = cache:GetResource("Sound", "audio/music_1780146499986.ogg")
-    if bgm then
-        bgm.looped = true
+    local bgmSound = cache:GetResource("Sound", "audio/music_1780146499986.ogg")
+    if bgmSound then
+        bgmSound.looped = true
         bgmNode_ = scene_:CreateChild("BGM")
         local bgmSource = bgmNode_:CreateComponent("SoundSource")
         bgmSource.soundType = SOUND_MUSIC
         bgmSource.gain = 0.5
-        bgmSource:Play(bgm)
-        bgmSource.looped = true
+        bgmSource:Play(bgmSound)
     end
     CreateWorld()
     CreateUI()
@@ -489,6 +492,7 @@ function Start()
     Editors.CreateSkinEditor()
     Editors.CreateTerrainEditor()
     Editors.CreateGameplayGM()
+    Editors.CreateScoreGM()
     Editors.CreateEditorMenu()
 
     SubscribeToEvent("Update", "HandleUpdate")
@@ -654,6 +658,96 @@ end
 -- ============================================================================
 -- 创建玩家
 -- ============================================================================
+--- 创建单个玩家物理体并返回 player 对象
+---@param pi number 玩家原始索引 (1-8)
+---@param spawnX number 生成位置 X
+---@param spawnY number 生成位置 Y
+---@return table player 对象
+function CreateSinglePlayer(pi, spawnX, spawnY)
+    local pdata = PLAYERS[pi]
+    pdata.skinIndex = lobby_.slots[pi].skinIndex
+
+    local node = scene_:CreateChild("Player" .. pi)
+    node:SetPosition2D(spawnX, spawnY)
+
+    local body = node:CreateComponent("RigidBody2D")
+    body.bodyType = BT_DYNAMIC
+    body.fixedRotation = true
+    body.linearDamping = 0.0
+    body.gravityScale = 1.0
+
+    local capR = capsuleRadius_ * playerScale_
+    local capH = capsuleHeight_ * playerScale_
+    local boxH = capH - capR * 2
+    if boxH < 0.01 then boxH = 0.01 end
+
+    local bodyBox = node:CreateComponent("CollisionBox2D")
+    bodyBox.size = Vector2(capR * 2, boxH)
+    bodyBox.center = Vector2(0, 0)
+    bodyBox.density = 1.0
+    bodyBox.friction = 0.0
+    bodyBox.restitution = 0.0
+    bodyBox.categoryBits = 2
+    bodyBox.maskBits = 0xFFFF
+
+    local topCap = node:CreateComponent("CollisionCircle2D")
+    topCap.radius = capR
+    topCap.center = Vector2(0, boxH / 2)
+    topCap.density = 1.0
+    topCap.friction = 0.0
+    topCap.restitution = 0.0
+    topCap.categoryBits = 2
+    topCap.maskBits = 0xFFFF
+
+    local bottomCap = node:CreateComponent("CollisionCircle2D")
+    bottomCap.radius = capR
+    bottomCap.center = Vector2(0, -boxH / 2)
+    bottomCap.density = 1.0
+    bottomCap.friction = 0.0
+    bottomCap.restitution = 0.0
+    bottomCap.categoryBits = 2
+    bottomCap.maskBits = 0xFFFF
+
+    local footSensor = node:CreateComponent("CollisionCircle2D")
+    footSensor.radius = capR * 0.6
+    footSensor.center = Vector2(0, -(capH / 2) * 0.9)
+    footSensor.trigger = true
+    footSensor.categoryBits = 4
+    footSensor.maskBits = 1
+
+    return {
+        node = node,
+        body = body,
+        onGround = false,
+        groundContacts = 0,
+        score = 0,
+        facing = 1,
+        config = pdata,
+        originalIndex = pi,
+        animTime = 0,
+        isMoving = false,
+        velY = 0,
+        jumping = false,
+        scale = { x = 1.0, y = 1.0 },
+        scaleTween = nil,
+        wasOnGround = true,
+        runDustTimer = 0,
+        -- 放大药丸系统
+        pillScale = 1.0,         -- 当前药丸放大倍率
+        pillScaleTarget = 1.0,   -- 目标倍率
+        pillScaleTimer = 0,      -- 放大进度计时器
+        pillScaleDuration = 0,   -- 放大总时长
+        pillScaleFrom = 1.0,     -- 放大起始值
+        -- 碰撞体引用（用于药丸放大时同步尺寸）
+        colliders = {
+            bodyBox = bodyBox,
+            topCap = topCap,
+            bottomCap = bottomCap,
+            footSensor = footSensor,
+        },
+    }
+end
+
 function CreatePlayers(activeIndices)
     players_ = {}
     local indicesToCreate = activeIndices or {}
@@ -662,75 +756,7 @@ function CreatePlayers(activeIndices)
     end
 
     for seq, pi in ipairs(indicesToCreate) do
-        local pdata = PLAYERS[pi]
-        pdata.skinIndex = lobby_.slots[pi].skinIndex
-
-        local node = scene_:CreateChild("Player" .. pi)
-        node:SetPosition2D(pdata.spawnX, CONFIG.GroundY + 2)
-
-        local body = node:CreateComponent("RigidBody2D")
-        body.bodyType = BT_DYNAMIC
-        body.fixedRotation = true
-        body.linearDamping = 0.0
-        body.gravityScale = 1.0
-
-        local capR = capsuleRadius_ * playerScale_
-        local capH = capsuleHeight_ * playerScale_
-        local boxH = capH - capR * 2
-        if boxH < 0.01 then boxH = 0.01 end
-
-        local bodyBox = node:CreateComponent("CollisionBox2D")
-        bodyBox.size = Vector2(capR * 2, boxH)
-        bodyBox.center = Vector2(0, 0)
-        bodyBox.density = 1.0
-        bodyBox.friction = 0.0
-        bodyBox.restitution = 0.0
-        bodyBox.categoryBits = 2
-        bodyBox.maskBits = 0xFFFF
-
-        local topCap = node:CreateComponent("CollisionCircle2D")
-        topCap.radius = capR
-        topCap.center = Vector2(0, boxH / 2)
-        topCap.density = 1.0
-        topCap.friction = 0.0
-        topCap.restitution = 0.0
-        topCap.categoryBits = 2
-        topCap.maskBits = 0xFFFF
-
-        local bottomCap = node:CreateComponent("CollisionCircle2D")
-        bottomCap.radius = capR
-        bottomCap.center = Vector2(0, -boxH / 2)
-        bottomCap.density = 1.0
-        bottomCap.friction = 0.0
-        bottomCap.restitution = 0.0
-        bottomCap.categoryBits = 2
-        bottomCap.maskBits = 0xFFFF
-
-        local footSensor = node:CreateComponent("CollisionCircle2D")
-        footSensor.radius = capR * 0.6
-        footSensor.center = Vector2(0, -(capH / 2) * 0.9)
-        footSensor.trigger = true
-        footSensor.categoryBits = 4
-        footSensor.maskBits = 1
-
-        players_[seq] = {
-            node = node,
-            body = body,
-            onGround = false,
-            groundContacts = 0,
-            score = 0,
-            facing = 1,
-            config = pdata,
-            originalIndex = pi,
-            animTime = 0,
-            isMoving = false,
-            velY = 0,
-            jumping = false,
-            scale = { x = 1.0, y = 1.0 },
-            scaleTween = nil,
-            wasOnGround = true,
-            runDustTimer = 0,
-        }
+        players_[seq] = CreateSinglePlayer(pi, PLAYERS[pi].spawnX, CONFIG.GroundY + 2)
     end
 end
 
@@ -1024,12 +1050,12 @@ local function GetPlayerIndex(node)
     return nil
 end
 
---- 查找 lobby 玩家（返回 slotIndex 或 nil）
-local function GetLobbyPlayerIndex(node)
-    for idx, lp in pairs(lobby_.lobbyPlayers) do
-        if lp.node == node then return idx end
+--- 通过 slot/原始玩家编号查找 players_ 中的索引和对象
+local function GetPlayerBySlot(slotIndex)
+    for i, p in ipairs(players_) do
+        if p.originalIndex == slotIndex then return i, p end
     end
-    return nil
+    return nil, nil
 end
 
 local function IsGround(node)
@@ -1048,17 +1074,6 @@ function HandleBeginContact(eventType, eventData)
             players_[pi].groundContacts = players_[pi].groundContacts + 1
             players_[pi].onGround = true
         end
-    else
-        -- 检查 lobby 玩家
-        local li = GetLobbyPlayerIndex(nodeA) or GetLobbyPlayerIndex(nodeB)
-        if li then
-            local lp = lobby_.lobbyPlayers[li]
-            local otherNode = GetLobbyPlayerIndex(nodeA) and nodeB or nodeA
-            if IsGround(otherNode) then
-                lp.groundContacts = lp.groundContacts + 1
-                lp.onGround = true
-            end
-        end
     end
 end
 
@@ -1073,20 +1088,6 @@ function HandleEndContact(eventType, eventData)
             if players_[pi].groundContacts <= 0 then
                 players_[pi].groundContacts = 0
                 players_[pi].onGround = false
-            end
-        end
-    else
-        -- 检查 lobby 玩家
-        local li = GetLobbyPlayerIndex(nodeA) or GetLobbyPlayerIndex(nodeB)
-        if li then
-            local lp = lobby_.lobbyPlayers[li]
-            local otherNode = GetLobbyPlayerIndex(nodeA) and nodeB or nodeA
-            if IsGround(otherNode) then
-                lp.groundContacts = lp.groundContacts - 1
-                if lp.groundContacts <= 0 then
-                    lp.groundContacts = 0
-                    lp.onGround = false
-                end
             end
         end
     end
@@ -1119,7 +1120,9 @@ function HandleUpdateContact(eventType, eventData)
     local platTopY = platPos.y + platHalfH
 
     local playerPos = playerNode.position2D
-    local playerBottomY = playerPos.y - (capsuleHeight_ * playerScale_) / 2
+    local p = players_[pi]
+    local pillS = (p and p.pillScale) or 1.0
+    local playerBottomY = playerPos.y - (capsuleHeight_ * playerScale_ * pillS) / 2
 
     if playerBottomY < platTopY - 0.05 then
         eventData["Enabled"] = Variant(false)
@@ -1139,6 +1142,17 @@ function HandleUpdate(eventType, eventData)
     globalTime_ = globalTime_ + dt
     screenW_ = graphics:GetWidth()
     screenH_ = graphics:GetHeight()
+
+    -- BGM 循环保险：检测停止后重新播放
+    if bgmNode_ then
+        local bgmSource = bgmNode_:GetComponent("SoundSource")
+        if bgmSource and not bgmSource.playing then
+            local bgmSound = cache:GetResource("Sound", "audio/music_1780146499986.ogg")
+            if bgmSound then
+                bgmSource:Play(bgmSound)
+            end
+        end
+    end
 
     -- 主界面状态：仅处理输入（动画由 UI 内置系统自动驱动）
     if gameState_ == "title" then
@@ -1174,9 +1188,13 @@ function HandleUpdate(eventType, eventData)
     if Editors.gameplayGMOpen then
         return
     end
+    if Editors.scoreGMOpen then
+        return
+    end
 
     -- 金币动画 & 粒子更新（所有状态都需要）
     Gameplay.UpdateCoinTime(dt)
+    Gameplay.UpdatePillTime(dt)
 
     -- 大厅逻辑
     if gameState_ == "lobby" then
@@ -1222,8 +1240,37 @@ function HandleUpdate(eventType, eventData)
                 sfxSource:Play(coinPickupSound_)
                 sfxSource.autoRemoveMode = REMOVE_NODE
             end
+            -- 药丸拾取检测
+            local pillCollector = Gameplay.UpdatePillCollection(players_, unlock_.currentGameplayIndex)
+            if pillCollector then
+                -- 启动放大效果
+                local p = players_[pillCollector]
+                p.pillScaleFrom = p.pillScale
+                p.pillScaleTarget = Cfg.PILL_ENLARGE_SCALE
+                p.pillScaleTimer = 0
+                p.pillScaleDuration = Cfg.PILL_ENLARGE_DURATION
+                -- 音效
+                if pillPickupSound_ then
+                    local sfxNode = scene_:CreateChild("PillSFX")
+                    local sfxSource = sfxNode:CreateComponent("SoundSource")
+                    sfxSource:Play(pillPickupSound_)
+                    sfxSource.autoRemoveMode = REMOVE_NODE
+                end
+                print(string.format("[Pill] %s 拾取放大药丸！", p.config.name))
+            end
+
+            -- 子弹躲避更新
+            local gp_bullet = GAMEPLAY_DATA[unlock_.currentGameplayIndex]
+            if gp_bullet.dodgeBullet then
+                Gameplay.UpdateBullets(dt, players_)
+            end
         end
     end
+
+    -- 更新药丸动画时间和粒子
+    Gameplay.UpdatePillTime(dt)
+    -- 更新药丸放大进度（所有状态都需要，确保动画流畅）
+    UpdatePillScales(dt)
 
     -- 公告板确认
     if gameState_ == "bulletin" and bulletin_.animPhase == "stay" then
@@ -1236,221 +1283,6 @@ end
 -- ============================================================================
 -- 大厅逻辑
 -- ============================================================================
-
---- 创建一个大厅玩家物理体（确认后落下）
-function CreateLobbyPlayer(slotIndex)
-    local pdata = PLAYERS[slotIndex]
-    pdata.skinIndex = lobby_.slots[slotIndex].skinIndex
-
-    -- 计算落下起始位置：从槽位屏幕位置映射到世界坐标
-    -- 槽位在左上角，4列2行
-    local cols = 4
-    local slotW = screenW_ * 0.065
-    local slotH = screenH_ * 0.13
-    local gap = 8
-    local panelPad = 12
-    local row = (slotIndex <= 4) and 0 or 1
-    local col = ((slotIndex - 1) % 4)
-    local sx = panelPad + col * (slotW + gap) + slotW / 2
-    local sy = panelPad + row * (slotH + gap) + slotH / 2
-
-    -- 屏幕坐标 → 物理坐标
-    local px, py = Render.ScreenToPhys(sx, sy)
-
-    local node = scene_:CreateChild("LobbyPlayer" .. slotIndex)
-    node:SetPosition2D(px, py)
-
-    local body = node:CreateComponent("RigidBody2D")
-    body.bodyType = BT_DYNAMIC
-    body.fixedRotation = true
-    body.linearDamping = 0.0
-    body.gravityScale = 1.0
-
-    local capR = capsuleRadius_ * playerScale_
-    local capH = capsuleHeight_ * playerScale_
-    local boxH = capH - capR * 2
-    if boxH < 0.01 then boxH = 0.01 end
-
-    local bodyBox = node:CreateComponent("CollisionBox2D")
-    bodyBox.size = Vector2(capR * 2, boxH)
-    bodyBox.center = Vector2(0, 0)
-    bodyBox.density = 1.0
-    bodyBox.friction = 0.0
-    bodyBox.restitution = 0.0
-    bodyBox.categoryBits = 2
-    bodyBox.maskBits = 0xFFFF
-
-    local topCap = node:CreateComponent("CollisionCircle2D")
-    topCap.radius = capR
-    topCap.center = Vector2(0, boxH / 2)
-    topCap.density = 1.0
-    topCap.friction = 0.0
-    topCap.restitution = 0.0
-    topCap.categoryBits = 2
-    topCap.maskBits = 0xFFFF
-
-    local bottomCap = node:CreateComponent("CollisionCircle2D")
-    bottomCap.radius = capR
-    bottomCap.center = Vector2(0, -boxH / 2)
-    bottomCap.density = 1.0
-    bottomCap.friction = 0.0
-    bottomCap.restitution = 0.0
-    bottomCap.categoryBits = 2
-    bottomCap.maskBits = 0xFFFF
-
-    local footSensor = node:CreateComponent("CollisionCircle2D")
-    footSensor.radius = capR * 0.6
-    footSensor.center = Vector2(0, -(capH / 2) * 0.9)
-    footSensor.trigger = true
-    footSensor.categoryBits = 4
-    footSensor.maskBits = 1
-
-    lobby_.lobbyPlayers[slotIndex] = {
-        node = node,
-        body = body,
-        onGround = false,
-        groundContacts = 0,
-        facing = 1,
-        config = pdata,
-        originalIndex = slotIndex,
-        animTime = 0,
-        isMoving = false,
-        velY = 0,
-        jumping = false,
-        scale = { x = 1.0, y = 1.0 },
-        scaleTween = nil,
-        wasOnGround = true,
-        runDustTimer = 0,
-        score = 0,
-    }
-    print(PLAYERS[slotIndex].name .. " 确认并落下")
-end
-
---- 移除一个大厅玩家（退出）
-function RemoveLobbyPlayer(slotIndex)
-    local lp = lobby_.lobbyPlayers[slotIndex]
-    if lp and lp.node then
-        lp.node:Remove()
-    end
-    lobby_.lobbyPlayers[slotIndex] = nil
-end
-
---- 检查大厅玩家是否在拍照区域内
-function IsLobbyPlayerInZone(lp)
-    local pos = lp.node.position2D
-    local zone = lobby_.photoZone
-    local halfW = zone.width / 2
-    local halfH = zone.height / 2
-    return pos.x >= zone.x - halfW and pos.x <= zone.x + halfW
-       and pos.y >= zone.y - halfH and pos.y <= zone.y + halfH
-end
-
---- 更新大厅玩家移动（同 UpdatePlayers 逻辑）
-function UpdateLobbyPlayerMovement(lp, dt)
-    local keys = lp.config.keys
-    local vel = lp.body.linearVelocity
-    local desiredVelX = 0
-
-    if input:GetKeyDown(keys.left) then
-        desiredVelX = -CONFIG.PlayerSpeed
-        lp.facing = -1
-    elseif input:GetKeyDown(keys.right) then
-        desiredVelX = CONFIG.PlayerSpeed
-        lp.facing = 1
-    end
-
-    lp.body.linearVelocity = Vector2(desiredVelX, vel.y)
-
-    -- 跳跃
-    if lp.onGround and input:GetKeyPress(keys.jump) then
-        lp.body.linearVelocity = Vector2(desiredVelX, CONFIG.PlayerJumpSpeed)
-        lp.body.awake = true
-        lp.jumping = true
-        lp.onGround = false
-        lp.groundContacts = 0
-        if jumpSound_ then
-            local sfxNode = scene_:CreateChild("JumpSFX")
-            local sfxSource = sfxNode:CreateComponent("SoundSource")
-            sfxSource:Play(jumpSound_)
-            sfxSource.autoRemoveMode = REMOVE_NODE
-        end
-        lp.scale.x = 1.0
-        lp.scale.y = 1.0
-        lp.scaleTween = tween.new(0.15, lp.scale, { x = 0.8, y = 1.3 }, "outQuad")
-        local pos = lp.node.position2D
-        local footY = pos.y - (capsuleHeight_ * playerScale_ / 2)
-        Render.SpawnJumpDust(pos.x, footY)
-    elseif lp.jumping then
-        if not input:GetKeyDown(keys.jump) then
-            local vy = lp.body.linearVelocity.y
-            if vy > 0 then
-                lp.body.linearVelocity = Vector2(lp.body.linearVelocity.x, vy * CONFIG.JumpCutMultiplier)
-            end
-            lp.jumping = false
-        elseif lp.body.linearVelocity.y <= 0 then
-            lp.jumping = false
-        end
-    end
-
-    -- 落地检测
-    if lp.onGround and not lp.wasOnGround then
-        if landSound_ then
-            local sfxNode = scene_:CreateChild("LandSFX")
-            local sfxSource = sfxNode:CreateComponent("SoundSource")
-            sfxSource:Play(landSound_)
-            sfxSource.autoRemoveMode = REMOVE_NODE
-        end
-        lp.scale.x = 1.0
-        lp.scale.y = 1.0
-        lp.scaleTween = tween.new(0.2, lp.scale, { x = 1.25, y = 0.75 }, "outQuad")
-        lp._squashRecover = true
-    end
-    lp.wasOnGround = lp.onGround
-
-    -- 缩放动画
-    if not lp.onGround and not lp.scaleTween then
-        local vy = math.abs(lp.body.linearVelocity.y)
-        local maxVy = math.abs(CONFIG.PlayerJumpSpeed)
-        local t = math.min(vy / maxVy, 1.0)
-        lp.scale.x = 1.0 - t * 0.2
-        lp.scale.y = 1.0 + t * 0.3
-    elseif lp.scaleTween then
-        local done = lp.scaleTween:update(dt)
-        if done then
-            if lp._squashRecover then
-                lp._squashRecover = false
-                lp.scaleTween = tween.new(0.15, lp.scale, { x = 1.0, y = 1.0 }, "outBack")
-            else
-                lp.scaleTween = nil
-                lp.scale.x = 1.0
-                lp.scale.y = 1.0
-            end
-        end
-    elseif lp.onGround and not lp.scaleTween then
-        lp.scale.x = 1.0
-        lp.scale.y = 1.0
-    end
-
-    lp.isMoving = math.abs(desiredVelX) > 0.1
-    lp.velY = lp.body.linearVelocity.y
-    if lp.isMoving then
-        lp.animTime = lp.animTime + dt * 10
-        if lp.onGround then
-            lp.runDustTimer = lp.runDustTimer + dt
-            if lp.runDustTimer >= 0.12 then
-                lp.runDustTimer = 0
-                local pos = lp.node.position2D
-                local footY = pos.y - (capsuleHeight_ * playerScale_ / 2)
-                Render.SpawnRunDust(pos.x, footY, lp.facing)
-            end
-        else
-            lp.runDustTimer = 0
-        end
-    else
-        lp.animTime = 0
-        lp.runDustTimer = 0
-    end
-end
 
 function UpdateLobby(dt)
     lobby_.animTime = lobby_.animTime + dt * 4.0
@@ -1484,9 +1316,21 @@ function UpdateLobby(dt)
                 slot.joined = true
                 print(PLAYERS[i].name .. " 加入游戏")
             elseif not slot.ready then
-                -- 确认准备：创建物理体并落下
+                -- 确认准备：用共享创建函数，落入 players_[]
                 slot.ready = true
-                CreateLobbyPlayer(i)
+                -- 计算落下起始位置：从槽位屏幕位置映射到世界坐标
+                local cols = 4
+                local slotW = screenW_ * 0.065
+                local slotH = screenH_ * 0.13
+                local gap = 8
+                local panelPad = 12
+                local row = (i <= 4) and 0 or 1
+                local col = ((i - 1) % 4)
+                local sx = panelPad + col * (slotW + gap) + slotW / 2
+                local sy = panelPad + row * (slotH + gap) + slotH / 2
+                local px, py = Render.ScreenToPhys(sx, sy)
+                table.insert(players_, CreateSinglePlayer(i, px, py))
+                print(PLAYERS[i].name .. " 确认并落下")
             end
         end
         -- 左右键切换皮肤（加入但未确认时）
@@ -1501,24 +1345,27 @@ function UpdateLobby(dt)
         end
     end
 
-    -- 更新所有已落地的大厅玩家移动
-    for slotIdx, lp in pairs(lobby_.lobbyPlayers) do
-        UpdateLobbyPlayerMovement(lp, dt)
-    end
+    -- 更新所有已落地玩家移动（复用局内逻辑，手感完全一致）
+    UpdatePlayers(dt)
 
     -- 检查拍照区域逻辑
     local joinedCount = 0
     local readyCount = 0
     local allInZone = true
+    local zone = lobby_.photoZone
+    local halfW = zone.width / 2
+    local halfH = zone.height / 2
 
     for i, slot in ipairs(lobby_.slots) do
         if slot.joined then
             joinedCount = joinedCount + 1
             if slot.ready then
                 readyCount = readyCount + 1
-                local lp = lobby_.lobbyPlayers[i]
-                if lp then
-                    if not IsLobbyPlayerInZone(lp) then
+                local _, p = GetPlayerBySlot(i)
+                if p then
+                    local pos = p.node.position2D
+                    if not (pos.x >= zone.x - halfW and pos.x <= zone.x + halfW
+                        and pos.y >= zone.y - halfH and pos.y <= zone.y + halfH) then
                         allInZone = false
                     end
                 else
@@ -1563,21 +1410,21 @@ function LobbyTakePhoto()
     lobby_.photoSnapshot = {}
     for i, slot in ipairs(lobby_.slots) do
         if slot.ready then
-            local lp = lobby_.lobbyPlayers[i]
-            if lp then
-                local pos = lp.node.position2D
+            local _, p = GetPlayerBySlot(i)
+            if p then
+                local pos = p.node.position2D
                 table.insert(lobby_.photoSnapshot, {
                     playerIndex = i,
                     px = pos.x,
                     py = pos.y,
-                    facing = lp.facing,
+                    facing = p.facing,
                     skinIndex = slot.skinIndex,
-                    animTime = lp.animTime,
-                    isMoving = lp.isMoving,
-                    onGround = lp.onGround,
-                    velY = lp.velY,
-                    scaleX = lp.scale.x,
-                    scaleY = lp.scale.y,
+                    animTime = p.animTime,
+                    isMoving = p.isMoving,
+                    onGround = p.onGround,
+                    velY = p.velY,
+                    scaleX = p.scale.x,
+                    scaleY = p.scale.y,
                 })
             end
         end
@@ -1595,26 +1442,27 @@ function LobbyTakePhoto()
 end
 
 function StartGameFromLobby()
-    -- 收集已加入的玩家索引
-    local activeIndices = {}
-    for i, slot in ipairs(lobby_.slots) do
-        if slot.joined then
-            table.insert(activeIndices, i)
-        end
-    end
-
-    -- 清除大厅物理体
-    for idx, lp in pairs(lobby_.lobbyPlayers) do
-        if lp.node then lp.node:Remove() end
-    end
-    lobby_.lobbyPlayers = {}
-
     -- 重置大厅子阶段
     lobby_.phase = "select"
     lobby_.countdownActive = false
     lobby_.countdown = 5.0
 
-    CreatePlayers(activeIndices)
+    -- 重定位已有 players_ 到游戏出生点（不销毁不重建）
+    for _, p in ipairs(players_) do
+        local spawnX = PLAYERS[p.originalIndex].spawnX
+        local spawnY = CONFIG.GroundY + 2
+        p.node:SetPosition2D(spawnX, spawnY)
+        p.body.linearVelocity = Vector2(0, 0)
+        p.body.awake = true
+        p.onGround = false
+        p.groundContacts = 0
+        p.jumping = false
+        p.score = 0
+        p.scale.x = 1.0
+        p.scale.y = 1.0
+        p.scaleTween = nil
+    end
+
     AssignTeams()
     CreateTeamUI()
 
@@ -1652,7 +1500,11 @@ function HandleMouseDown(eventType, eventData)
                 if slot.ready then
                     -- 已准备（已落下）→ 取消准备，移除物理体
                     slot.ready = false
-                    RemoveLobbyPlayer(i)
+                    local pi, _ = GetPlayerBySlot(i)
+                    if pi then
+                        players_[pi].node:Remove()
+                        table.remove(players_, pi)
+                    end
                     print(PLAYERS[i].name .. " 取消准备（回到选皮肤）")
                 else
                     -- 已加入但未准备 → 退出
@@ -1704,6 +1556,52 @@ function SetupTugOfWarPositions()
         p.node:SetPosition2D(posX, p.node.position2D.y)
         p.body.linearVelocity = Vector2(0, p.body.linearVelocity.y)
         p.facing = -1  -- 面朝左（朝向对方）
+    end
+end
+
+-- ============================================================================
+-- 药丸放大进度更新
+-- ============================================================================
+function UpdatePillScales(dt)
+    if not players_ then return end
+    local baseCapR = capsuleRadius_ * playerScale_
+    local baseCapH = capsuleHeight_ * playerScale_
+    for _, p in ipairs(players_) do
+        if p.pillScaleDuration > 0 then
+            p.pillScaleTimer = p.pillScaleTimer + dt
+            local t = math.min(p.pillScaleTimer / p.pillScaleDuration, 1.0)
+            -- easeOutBack 缓动：有一点弹性超调效果
+            local c1 = 1.70158
+            local c3 = c1 + 1
+            local ease = 1 + c3 * math.pow(t - 1, 3) + c1 * math.pow(t - 1, 2)
+            p.pillScale = p.pillScaleFrom + (p.pillScaleTarget - p.pillScaleFrom) * ease
+
+            -- 动画完成
+            if t >= 1.0 then
+                p.pillScale = p.pillScaleTarget
+                p.pillScaleDuration = 0
+            end
+        end
+
+        -- 同步物理碰撞体尺寸（自然缩放，center 保持在 0 附近）
+        -- Box2D 自然处理：放大后胶囊更高，node 中心自然被顶高，脚底仍着地
+        local scale = p.pillScale
+        if scale ~= 1.0 then
+            local capR = baseCapR * scale
+            local capH = baseCapH * scale
+            local boxH = capH - capR * 2
+            if boxH < 0.01 then boxH = 0.01 end
+
+            local col = p.colliders
+            col.bodyBox.size = Vector2(capR * 2, boxH)
+            col.bodyBox.center = Vector2(0, 0)
+            col.topCap.radius = capR
+            col.topCap.center = Vector2(0, boxH / 2)
+            col.bottomCap.radius = capR
+            col.bottomCap.center = Vector2(0, -boxH / 2)
+            col.footSensor.radius = capR * 0.6
+            col.footSensor.center = Vector2(0, -(capH / 2) * 0.9)
+        end
     end
 end
 
@@ -2063,6 +1961,30 @@ function UpdateShowPhotoConfirm()
         -- 直接进入 prep 阶段（跳过 bulletin 动画）
         photoZone_.active = false
         Gameplay.OnRoundEnd()
+        -- 重置所有玩家的药丸放大状态和碰撞体尺寸
+        for _, p in ipairs(players_) do
+            if p.pillScale ~= 1.0 then
+                p.pillScale = 1.0
+                p.pillScaleTarget = 1.0
+                p.pillScaleTimer = 0
+                p.pillScaleDuration = 0
+                p.pillScaleFrom = 1.0
+                -- 恢复碰撞体原始尺寸
+                local capR = capsuleRadius_ * playerScale_
+                local capH = capsuleHeight_ * playerScale_
+                local boxH = capH - capR * 2
+                if boxH < 0.01 then boxH = 0.01 end
+                local col = p.colliders
+                col.bodyBox.size = Vector2(capR * 2, boxH)
+                col.bodyBox.center = Vector2(0, 0)
+                col.topCap.radius = capR
+                col.topCap.center = Vector2(0, boxH / 2)
+                col.bottomCap.radius = capR
+                col.bottomCap.center = Vector2(0, -boxH / 2)
+                col.footSensor.radius = capR * 0.6
+                col.footSensor.center = Vector2(0, -(capH / 2) * 0.9)
+            end
+        end
         bulletin_.nextRoundPrepared = false
 
         -- 恢复上一轮的地图倾斜状态
@@ -2256,6 +2178,7 @@ function TakePhoto()
             onGround = p.onGround,
             isMoving = p.isMoving,
             animTime = p.animTime,
+            pillScale = p.pillScale or 1.0,
         }
     end
 
@@ -2284,6 +2207,21 @@ function TakePhoto()
                 teams_[t].score = teams_[t].score + CONFIG.ScorePerPhoto * #teams_[t].members
             end
             print("[TugOfWar] 平局! 双方都拍照得分")
+            -- 检测双方同时达到目标分
+            local ws = GetWinScore()
+            if teams_[1].score >= ws and teams_[2].score >= ws then
+                gameOver_ = true
+                winner_ = "平局"
+                print("=== 平局! ===")
+            elseif teams_[1].score >= ws then
+                gameOver_ = true
+                winner_ = teams_[1].name
+                print("=== " .. winner_ .. " 获胜! ===")
+            elseif teams_[2].score >= ws then
+                gameOver_ = true
+                winner_ = teams_[2].name
+                print("=== " .. winner_ .. " 获胜! ===")
+            end
         else
             -- 获胜队所有成员得分
             local winTeam = teams_[winnerTeam]
@@ -2305,11 +2243,17 @@ function TakePhoto()
         -- 常规结算：检测区域内玩家
         local playersInZone = {}
         for i, p in ipairs(players_) do
+            -- 被子弹击中的玩家不参与结算
+            if Gameplay.IsPlayerBulletDestroyed(i) then
+                goto continue_score
+            end
+
             local pos = p.node.position2D
 
-            -- 胶囊体与矩形区域相交检测
-            local capR = CONFIG.PlayerRadius * playerScale_
-            local capH = capsuleHeight_ * playerScale_ * (CONFIG.PlayerRadius / capsuleRadius_)
+            -- 胶囊体与矩形区域相交检测（考虑药丸放大）
+            local pillS = p.pillScale or 1.0
+            local capR = CONFIG.PlayerRadius * playerScale_ * pillS
+            local capH = capsuleHeight_ * playerScale_ * (CONFIG.PlayerRadius / capsuleRadius_) * pillS
             local boxH = capH - capR * 2
             if boxH < 0 then boxH = 0 end
 
@@ -2333,6 +2277,8 @@ function TakePhoto()
             if inZone then
                 table.insert(playersInZone, i)
             end
+
+            ::continue_score::
         end
 
         -- 使用 Gameplay 模块计算得分
@@ -2347,10 +2293,24 @@ function TakePhoto()
             end
             table.insert(roundResult_, idx)
             print(p.config.name .. " 得分! 个人: " .. p.score .. " 团队: " .. (teamIdx and teams_[teamIdx].score or 0))
+        end
 
-            if teamIdx and teams_[teamIdx].score >= GetWinScore() then
+        -- 结算后统一检测胜负（避免先到先赢的顺序问题）
+        if not gameOver_ then
+            local ws = GetWinScore()
+            local t1Done = teams_[1].score >= ws
+            local t2Done = teams_[2].score >= ws
+            if t1Done and t2Done then
                 gameOver_ = true
-                winner_ = teams_[teamIdx].name
+                winner_ = "平局"
+                print("=== 平局! ===")
+            elseif t1Done then
+                gameOver_ = true
+                winner_ = teams_[1].name
+                print("=== " .. winner_ .. " 获胜! ===")
+            elseif t2Done then
+                gameOver_ = true
+                winner_ = teams_[2].name
                 print("=== " .. winner_ .. " 获胜! ===")
             end
         end
@@ -2407,11 +2367,7 @@ function RestartGame()
         lobby_.slots[i].joined = false
         lobby_.slots[i].ready = false
     end
-    -- 清理 lobby 物理体
-    for idx, lp in pairs(lobby_.lobbyPlayers) do
-        if lp.node then lp.node:Remove() end
-    end
-    lobby_.lobbyPlayers = {}
+    -- players_ 已在上方清理（Remove + 清空）
     lobby_.xButtonRects = {}
     lobby_.phase = "select"
     lobby_.countdownActive = false
@@ -2458,6 +2414,8 @@ function HandleNanoVGRender(eventType, eventData)
         Render.UpdateAndDrawClouds(frameDt_)
         Render.DrawPlatforms()
         Render.DrawCoins(Gameplay.GetCoins(), unlock_.currentGameplayIndex, Gameplay.GetCoinTime(), Gameplay.GetCoinParticles())
+        Render.DrawPills(Gameplay.GetPills(), unlock_.currentGameplayIndex, Gameplay.GetPillTime(), Gameplay.GetPillParticles())
+        Render.DrawBullets(Gameplay.GetBullets(), unlock_.currentGameplayIndex, Gameplay.GetBulletTime())
         Render.DrawPhotoZone()
         Render.UpdateAndDrawParticles(frameDt_)
         Render.DrawPlayers()
@@ -2497,21 +2455,21 @@ function DrawLobby()
     -- === 2. 渲染拍照区域 ===
     Render.DrawPhotoZone()
 
-    -- === 3. 渲染已落地的 lobby 玩家 ===
+    -- === 3. 渲染已落地的 lobby 玩家（从 players_[] 读取） ===
     local ppu = Render.GetPixelsPerUnit()
-    for slotIdx, lp in pairs(lobby_.lobbyPlayers) do
-        local pos = lp.node.position2D
+    for _, p in ipairs(players_) do
+        local pos = p.node.position2D
         local playerSX, playerSY = Render.PhysToScreen(pos.x, pos.y)
-        local slot = lobby_.slots[slotIdx]
+        local slot = lobby_.slots[p.originalIndex]
         local skin = skinsRuntime_[slot.skinIndex]
-        local pdata = PLAYERS[slotIdx]
+        local pdata = p.config
         local c = pdata.color
 
         local limbSwing = 0
         local armSwing = 0
-        if lp.isMoving and lp.onGround then
-            limbSwing = math.sin(lp.animTime * 8) * 0.5
-            armSwing = -math.sin(lp.animTime * 8) * 0.35
+        if p.isMoving and p.onGround then
+            limbSwing = math.sin(p.animTime * 8) * 0.5
+            armSwing = -math.sin(p.animTime * 8) * 0.35
         end
 
         Render.DrawSinglePlayer({
@@ -2519,16 +2477,16 @@ function DrawLobby()
             sy = playerSY,
             color = c,
             skin = skin,
-            facing = lp.facing,
+            facing = p.facing,
             limbSwing = limbSwing,
             armSwing = armSwing,
-            inAir = not lp.onGround,
-            isMoving = lp.isMoving,
-            onGround = lp.onGround,
-            velY = lp.velY,
+            inAir = not p.onGround,
+            isMoving = p.isMoving,
+            onGround = p.onGround,
+            velY = p.velY,
             name = pdata.name,
-            scaleX = lp.scale.x,
-            scaleY = lp.scale.y,
+            scaleX = p.scale.x,
+            scaleY = p.scale.y,
         })
     end
 
@@ -2655,10 +2613,8 @@ function DrawLobby()
         end
     end
 
-    -- === 5. 中下方提示文字 ===
-    nvgFontSize(nvg, 18)
+    -- === 5. 提示文字 + 倒数 ===
     nvgFontFace(nvg, "sans")
-    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
 
     local joinedCount = 0
     local readyCount = 0
@@ -2669,36 +2625,76 @@ function DrawLobby()
         end
     end
 
-    if lobby_.countdownActive then
-        -- 倒数计时（大字居中，粉色）
-        local cdSec = math.ceil(lobby_.countdown)
-        nvgFontSize(nvg, 72)
-        nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-        local pulse = 1.0 + math.sin(lobby_.countdown * math.pi * 2) * 0.1
-        nvgFillColor(nvg, nvgRGBA(240, 80, 130, 250))
-        nvgText(nvg, sw / 2, sh / 2, tostring(cdSec), nil)
+    -- (A) 上方操作说明（闪烁，慢速）
+    local blinkAlpha = math.floor(160 + 95 * math.sin((lobby_.animTime or 0) * 1.2))
+    local instrX = sw * 0.5
+    local instrY = sh * 0.18
+    -- 背景半透明框
+    local boxW, boxH = 580, 100
+    nvgBeginPath(nvg)
+    nvgRoundedRect(nvg, instrX - boxW / 2, instrY - boxH / 2, boxW, boxH, 14)
+    nvgFillColor(nvg, nvgRGBA(0, 0, 0, math.floor(blinkAlpha * 0.4)))
+    nvgFill(nvg)
+    -- 文字（放大2倍）
+    nvgFontSize(nvg, 36)
+    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg, nvgRGBA(255, 255, 255, blinkAlpha))
+    nvgText(nvg, instrX, instrY - 20, "单击 ↑ 加入游戏，← → 切换人物", nil)
+    nvgText(nvg, instrX, instrY + 20, "再次单击 ↑ 确认", nil)
 
-        nvgFontSize(nvg, 16)
-        nvgFillColor(nvg, nvgRGBA(100, 200, 220, 230))
-        nvgText(nvg, sw / 2, sh / 2 + 50, "全员就位！即将拍照...", nil)
+    -- (B) 手指指向拍照区域 + 提示
+    local zone = lobby_.photoZone
+    local zoneSX, zoneSY = Render.PhysToScreen(zone.x, zone.y)
+    local zonePpu = Render.GetPixelsPerUnit()
+    local zoneScreenW = zone.width * zonePpu
+    -- 手指从上方指向拍照区域
+    local zoneScreenH = zone.height * zonePpu
+    local fingerX = zoneSX
+    local fingerY = zoneSY - zoneScreenH / 2 - 40
+    -- 浮动动画（上下）
+    local floatOffset = math.sin((lobby_.animTime or 0) * 2.0) * 8
+    fingerY = fingerY + floatOffset
+    nvgFontSize(nvg, 64)
+    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg, nvgRGBA(255, 255, 255, 240))
+    nvgText(nvg, fingerX, fingerY, "👇", nil)
+    -- 文字在手指上方
+    nvgFontSize(nvg, 36)
+    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+    local arrowAlpha = math.floor(180 + 75 * math.sin((lobby_.animTime or 0) * 1.5))
+    nvgFillColor(nvg, nvgRGBA(255, 255, 255, arrowAlpha))
+    nvgText(nvg, fingerX, fingerY - 38, "所有人到这拍照进入游戏", nil)
+
+    -- (C) 倒数计时（屏幕中心，放大2倍）
+    if lobby_.countdownActive then
+        local cdSec = math.ceil(lobby_.countdown)
+        nvgFontSize(nvg, 144)
+        nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(nvg, nvgRGBA(240, 80, 130, 250))
+        nvgText(nvg, sw / 2, sh / 2 - 20, tostring(cdSec), nil)
+
+        nvgFontSize(nvg, 32)
+        nvgFillColor(nvg, nvgRGBA(100, 220, 240, 240))
+        nvgText(nvg, sw / 2, sh / 2 + 60, "全员就位！即将拍照...", nil)
+    end
+
+    -- (D) 底部状态提示
+    nvgFontSize(nvg, 18)
+    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    local hintY = sh - 40
+    if joinedCount < 2 then
+        nvgFillColor(nvg, nvgRGBA(120, 100, 160, 200))
+        nvgText(nvg, sw / 2, hintY, "按 ↑ 加入 → ← → 选皮肤 → 再按 ↑ 确认落下", nil)
+    elseif joinedCount ~= readyCount then
+        nvgFillColor(nvg, nvgRGBA(240, 160, 60, 220))
+        nvgText(nvg, sw / 2, hintY, "等待所有人确认...", nil)
+    elseif joinedCount % 2 ~= 0 then
+        local flashAlpha = math.floor(160 + 80 * math.sin(lobby_.warningFlash * 6))
+        nvgFillColor(nvg, nvgRGBA(240, 80, 100, flashAlpha))
+        nvgText(nvg, sw / 2, hintY, "玩家人数需要为双数!", nil)
     else
-        -- 提示信息（柔和配色）
-        local hintY = sh - 40
-        if joinedCount < 2 then
-            nvgFillColor(nvg, nvgRGBA(120, 100, 160, 200))
-            nvgText(nvg, sw / 2, hintY, "按跳跃键加入 → 选皮肤(左右键) → 再按跳跃确认落下", nil)
-        elseif joinedCount ~= readyCount then
-            nvgFillColor(nvg, nvgRGBA(240, 160, 60, 220))
-            nvgText(nvg, sw / 2, hintY, "等待所有人确认...", nil)
-        elseif joinedCount % 2 ~= 0 then
-            -- 奇数人警告（闪烁粉红）
-            local flashAlpha = math.floor(160 + 80 * math.sin(lobby_.warningFlash * 6))
-            nvgFillColor(nvg, nvgRGBA(240, 80, 100, flashAlpha))
-            nvgText(nvg, sw / 2, hintY, "玩家人数需要为双数!", nil)
-        else
-            nvgFillColor(nvg, nvgRGBA(80, 200, 160, 220))
-            nvgText(nvg, sw / 2, hintY, "全员进入拍照区域开始倒数!", nil)
-        end
+        nvgFillColor(nvg, nvgRGBA(80, 200, 160, 220))
+        nvgText(nvg, sw / 2, hintY, "全员进入拍照区域开始倒数!", nil)
     end
 
     -- === 6. 闪光效果（拍照瞬间） ===
@@ -2722,8 +2718,8 @@ function DrawLobby()
         nvgFill(nvg)
 
         -- 拍立得相框
-        local zone = lobby_.photoZone
-        local zoneAspect = zone.width / zone.height
+        local pZone = lobby_.photoZone
+        local zoneAspect = pZone.width / pZone.height
         local maxPhotoW = sw * 0.55
         local maxPhotoH = sh * 0.55
         local photoW, photoH
@@ -2764,11 +2760,11 @@ function DrawLobby()
         nvgScissor(nvg, photoX, photoY, photoW, photoH)
 
         -- 缩放渲染：将物理世界的拍照区域映射到照片区域
-        local zoneCenterSX, zoneCenterSY = Render.PhysToScreen(zone.x, zone.y)
-        local zoneScreenW = zone.width * ppu
-        local zoneScreenH = zone.height * ppu
-        local scaleX = photoW / zoneScreenW
-        local scaleY = photoH / zoneScreenH
+        local zoneCenterSX, zoneCenterSY = Render.PhysToScreen(pZone.x, pZone.y)
+        local pZoneScreenW = pZone.width * ppu
+        local pZoneScreenH = pZone.height * ppu
+        local scaleX = photoW / pZoneScreenW
+        local scaleY = photoH / pZoneScreenH
         local scale = math.min(scaleX, scaleY)
 
         local photoCenterX = photoX + photoW / 2
@@ -2818,35 +2814,58 @@ function DrawLobby()
 end
 
 -- ============================================================================
--- 分队展示界面（team_reveal）
+-- 分队展示界面（team_reveal）- 粉蓝可爱风格
 -- ============================================================================
 function DrawTeamReveal()
     local nvg = nvg_
     local sw, sh = screenW_, screenH_
 
-    -- 背景（深色渐变）
+    -- 背景（浅粉蓝渐变 - 匹配开屏画面风格）
     nvgBeginPath(nvg)
     nvgRect(nvg, 0, 0, sw, sh)
-    local bg = nvgLinearGradient(nvg, 0, 0, 0, sh,
-        nvgRGBA(15, 20, 40, 255), nvgRGBA(5, 8, 20, 255))
+    local bg = nvgLinearGradient(nvg, 0, 0, sw, sh,
+        nvgRGBA(200, 230, 255, 255), nvgRGBA(255, 210, 230, 255))
     nvgFillPaint(nvg, bg)
     nvgFill(nvg)
+
+    -- 装饰：散落的星星/圆点
+    for i = 1, 12 do
+        local dx = (sw * ((i * 137) % 100) / 100)
+        local dy = (sh * ((i * 73 + 29) % 100) / 100)
+        local pulse = 0.6 + 0.4 * math.sin(teamReveal_.timer * 2.0 + i * 0.8)
+        local dotR = 4 + (i % 3) * 3
+        nvgBeginPath(nvg)
+        nvgCircle(nvg, dx, dy, dotR * pulse)
+        if i % 2 == 0 then
+            nvgFillColor(nvg, nvgRGBA(255, 150, 200, math.floor(100 * pulse)))
+        else
+            nvgFillColor(nvg, nvgRGBA(100, 200, 255, math.floor(100 * pulse)))
+        end
+        nvgFill(nvg)
+    end
 
     -- 动画进度
     local t = math.min(teamReveal_.timer / 0.8, 1.0) -- 入场动画0.8秒
 
-    -- VS 文字
-    nvgFontSize(nvg, 60)
+    -- VS 文字（大号粉色描边）
+    nvgFontSize(nvg, 72)
     nvgFontFace(nvg, "sans")
     nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
     local vsAlpha = math.floor(math.min(teamReveal_.timer / 0.5, 1.0) * 255)
-    nvgFillColor(nvg, nvgRGBA(255, 255, 255, vsAlpha))
+    -- 白色描边
+    nvgStrokeColor(nvg, nvgRGBA(255, 255, 255, vsAlpha))
+    nvgStrokeWidth(nvg, 4)
+    -- 粉色填充
+    nvgFillColor(nvg, nvgRGBA(240, 80, 140, vsAlpha))
     nvgText(nvg, sw/2, sh/2, "VS", nil)
 
-    -- 闪光分隔线
+    -- 分隔线（渐变粉色线）
     nvgBeginPath(nvg)
-    nvgRect(nvg, sw/2 - 2, sh * 0.15, 4, sh * 0.7)
-    nvgFillColor(nvg, nvgRGBA(255, 255, 255, math.floor(vsAlpha * 0.3)))
+    nvgRect(nvg, sw/2 - 1.5, sh * 0.12, 3, sh * 0.76)
+    local lineGrad = nvgLinearGradient(nvg, sw/2, sh*0.12, sw/2, sh*0.88,
+        nvgRGBA(100, 200, 255, math.floor(vsAlpha*0.5)),
+        nvgRGBA(255, 130, 180, math.floor(vsAlpha*0.5)))
+    nvgFillPaint(nvg, lineGrad)
     nvgFill(nvg)
 
     -- 左队（蓝队）
@@ -2856,50 +2875,65 @@ function DrawTeamReveal()
     local team2 = teams_[2]
     local tc2 = team2.color
 
-    -- 队名
-    nvgFontSize(nvg, 28)
+    -- 队名（加大，带阴影）
+    nvgFontSize(nvg, 36)
     nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+    -- 蓝队名阴影
+    nvgFillColor(nvg, nvgRGBA(0, 0, 0, math.floor(vsAlpha * 0.15)))
+    nvgText(nvg, sw * 0.25 + 2, sh * 0.06 + 2, team1.name, nil)
+    -- 蓝队名
     nvgFillColor(nvg, nvgRGBA(tc1[1], tc1[2], tc1[3], vsAlpha))
-    nvgText(nvg, sw * 0.25, sh * 0.08, team1.name, nil)
+    nvgText(nvg, sw * 0.25, sh * 0.06, team1.name, nil)
 
+    -- 红队名阴影
+    nvgFillColor(nvg, nvgRGBA(0, 0, 0, math.floor(vsAlpha * 0.15)))
+    nvgText(nvg, sw * 0.75 + 2, sh * 0.06 + 2, team2.name, nil)
+    -- 红队名
     nvgFillColor(nvg, nvgRGBA(tc2[1], tc2[2], tc2[3], vsAlpha))
-    nvgText(nvg, sw * 0.75, sh * 0.08, team2.name, nil)
+    nvgText(nvg, sw * 0.75, sh * 0.06, team2.name, nil)
 
     -- 绘制左队成员（从左滑入）
     local leftCount = #team1.members
-    local cardH = math.min(140, (sh * 0.7) / math.max(leftCount, 1))
-    local cardW = sw * 0.35
+    local cardH = math.min(150, (sh * 0.68) / math.max(leftCount, 1))
+    local cardW = sw * 0.38
     local leftBaseX = sw * 0.25
-    local baseY = sh * 0.18
+    local baseY = sh * 0.16
 
     for idx, pi in ipairs(team1.members) do
         local p = players_[pi]
-        local slideOffset = (1 - t) * (-200) -- 从左侧滑入
-        local cy = baseY + (idx - 1) * (cardH + 8)
+        local slideOffset = (1 - t) * (-250) -- 从左侧滑入
+        local cy = baseY + (idx - 1) * (cardH + 10)
         local cx = leftBaseX + slideOffset
+        local pc = p.config.color -- 玩家专属颜色
 
-        -- 卡片背景
+        -- 卡片背景（白色圆角卡片 + 柔和阴影）
+        -- 阴影
         nvgBeginPath(nvg)
-        nvgRoundedRect(nvg, cx - cardW/2, cy, cardW, cardH - 8, 10)
-        nvgFillColor(nvg, nvgRGBA(tc1[1], tc1[2], tc1[3], math.floor(40 * t)))
+        nvgRoundedRect(nvg, cx - cardW/2 + 3, cy + 3, cardW, cardH - 10, 16)
+        nvgFillColor(nvg, nvgRGBA(0, 0, 0, math.floor(20 * t)))
         nvgFill(nvg)
+        -- 白色卡片
         nvgBeginPath(nvg)
-        nvgRoundedRect(nvg, cx - cardW/2, cy, cardW, cardH - 8, 10)
-        nvgStrokeColor(nvg, nvgRGBA(tc1[1], tc1[2], tc1[3], math.floor(180 * t)))
-        nvgStrokeWidth(nvg, 2)
+        nvgRoundedRect(nvg, cx - cardW/2, cy, cardW, cardH - 10, 16)
+        nvgFillColor(nvg, nvgRGBA(255, 255, 255, math.floor(230 * t)))
+        nvgFill(nvg)
+        -- 队伍颜色边框
+        nvgBeginPath(nvg)
+        nvgRoundedRect(nvg, cx - cardW/2, cy, cardW, cardH - 10, 16)
+        nvgStrokeColor(nvg, nvgRGBA(tc1[1], tc1[2], tc1[3], math.floor(200 * t)))
+        nvgStrokeWidth(nvg, 2.5)
         nvgStroke(nvg)
 
         -- 角色立绘（通过 skinIndex 获取皮肤）
         local skinIdx = p.config.skinIndex or 1
         local skin = skinsRuntime_[skinIdx]
         if skin then
-            -- 呼吸动画：轻微缩放脉动
             local breathe = 1.0 + math.sin(teamReveal_.timer * 2.5 + pi * 1.3) * 0.03
-            local baseScale = 1.8
+            local baseScale = 2.0
             Render.DrawSinglePlayer({
-                sx = cx - cardW * 0.2,
+                sx = cx - cardW * 0.22,
                 sy = cy + cardH * 0.5,
-                color = p.config.color,
+                color = pc,
                 skin = skin,
                 facing = 1,
                 limbSwing = math.sin(teamReveal_.timer * 2.0 + pi) * 0.1,
@@ -2914,11 +2948,28 @@ function DrawTeamReveal()
             })
         end
 
-        -- 玩家名
-        nvgFontSize(nvg, 18)
+        -- 玩家名区域（圆点 + 名字，垂直居中对齐）
+        local nameX = cx + cardW * 0.05
+        local nameY = cy + cardH/2 - 4
+
+        -- 颜色圆点（与局内头顶颜色一致）
+        nvgBeginPath(nvg)
+        nvgCircle(nvg, nameX, nameY, 7)
+        nvgFillColor(nvg, nvgRGBA(pc[1], pc[2], pc[3], math.floor(255 * t)))
+        nvgFill(nvg)
+
+        -- 玩家名（大号 + 使用玩家专属颜色）
+        nvgFontSize(nvg, 36)
+        nvgFontFace(nvg, "sans")
         nvgTextAlign(nvg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
-        nvgFillColor(nvg, nvgRGBA(255, 255, 255, math.floor(255 * t)))
-        nvgText(nvg, cx + cardW * 0.05, cy + cardH/2 - 4, p.config.name, nil)
+        nvgFillColor(nvg, nvgRGBA(pc[1], pc[2], pc[3], math.floor(255 * t)))
+        nvgText(nvg, nameX + 14, nameY, p.config.name, nil)
+
+        -- PLAYER 小标签
+        nvgFontSize(nvg, 14)
+        nvgTextAlign(nvg, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
+        nvgFillColor(nvg, nvgRGBA(140, 140, 160, math.floor(200 * t)))
+        nvgText(nvg, nameX + 14, nameY + 16, "PLAYER", nil)
     end
 
     -- 绘制右队成员（从右滑入）
@@ -2927,32 +2978,36 @@ function DrawTeamReveal()
 
     for idx, pi in ipairs(team2.members) do
         local p = players_[pi]
-        local slideOffset = (1 - t) * 200 -- 从右侧滑入
-        local cy = baseY + (idx - 1) * (cardH + 8)
+        local slideOffset = (1 - t) * 250 -- 从右侧滑入
+        local cy = baseY + (idx - 1) * (cardH + 10)
         local cx = rightBaseX + slideOffset
+        local pc = p.config.color -- 玩家专属颜色
 
-        -- 卡片背景
+        -- 卡片背景（白色圆角卡片 + 柔和阴影）
         nvgBeginPath(nvg)
-        nvgRoundedRect(nvg, cx - cardW/2, cy, cardW, cardH - 8, 10)
-        nvgFillColor(nvg, nvgRGBA(tc2[1], tc2[2], tc2[3], math.floor(40 * t)))
+        nvgRoundedRect(nvg, cx - cardW/2 + 3, cy + 3, cardW, cardH - 10, 16)
+        nvgFillColor(nvg, nvgRGBA(0, 0, 0, math.floor(20 * t)))
         nvgFill(nvg)
         nvgBeginPath(nvg)
-        nvgRoundedRect(nvg, cx - cardW/2, cy, cardW, cardH - 8, 10)
-        nvgStrokeColor(nvg, nvgRGBA(tc2[1], tc2[2], tc2[3], math.floor(180 * t)))
-        nvgStrokeWidth(nvg, 2)
+        nvgRoundedRect(nvg, cx - cardW/2, cy, cardW, cardH - 10, 16)
+        nvgFillColor(nvg, nvgRGBA(255, 255, 255, math.floor(230 * t)))
+        nvgFill(nvg)
+        nvgBeginPath(nvg)
+        nvgRoundedRect(nvg, cx - cardW/2, cy, cardW, cardH - 10, 16)
+        nvgStrokeColor(nvg, nvgRGBA(tc2[1], tc2[2], tc2[3], math.floor(200 * t)))
+        nvgStrokeWidth(nvg, 2.5)
         nvgStroke(nvg)
 
-        -- 角色立绘（通过 skinIndex 获取皮肤）
+        -- 角色立绘
         local skinIdx = p.config.skinIndex or 1
         local skin = skinsRuntime_[skinIdx]
         if skin then
-            -- 呼吸动画：轻微缩放脉动
             local breathe = 1.0 + math.sin(teamReveal_.timer * 2.5 + pi * 1.7) * 0.03
-            local baseScale = 1.8
+            local baseScale = 2.0
             Render.DrawSinglePlayer({
-                sx = cx + cardW * 0.2,
+                sx = cx + cardW * 0.22,
                 sy = cy + cardH * 0.5,
-                color = p.config.color,
+                color = pc,
                 skin = skin,
                 facing = -1,
                 limbSwing = math.sin(teamReveal_.timer * 2.0 + pi) * 0.1,
@@ -2967,20 +3022,37 @@ function DrawTeamReveal()
             })
         end
 
-        -- 玩家名
-        nvgFontSize(nvg, 18)
+        -- 玩家名区域（名字 + 圆点，垂直居中对齐）
+        local nameX = cx - cardW * 0.05
+        local nameY = cy + cardH/2 - 4
+
+        -- 颜色圆点（右侧，与局内头顶颜色一致）
+        nvgBeginPath(nvg)
+        nvgCircle(nvg, nameX, nameY, 7)
+        nvgFillColor(nvg, nvgRGBA(pc[1], pc[2], pc[3], math.floor(255 * t)))
+        nvgFill(nvg)
+
+        -- 玩家名（大号 + 使用玩家专属颜色）
+        nvgFontSize(nvg, 36)
+        nvgFontFace(nvg, "sans")
         nvgTextAlign(nvg, NVG_ALIGN_RIGHT + NVG_ALIGN_MIDDLE)
-        nvgFillColor(nvg, nvgRGBA(255, 255, 255, math.floor(255 * t)))
-        nvgText(nvg, cx - cardW * 0.05, cy + cardH/2 - 4, p.config.name, nil)
+        nvgFillColor(nvg, nvgRGBA(pc[1], pc[2], pc[3], math.floor(255 * t)))
+        nvgText(nvg, nameX - 14, nameY, p.config.name, nil)
+
+        -- PLAYER 小标签
+        nvgFontSize(nvg, 14)
+        nvgTextAlign(nvg, NVG_ALIGN_RIGHT + NVG_ALIGN_TOP)
+        nvgFillColor(nvg, nvgRGBA(140, 140, 160, math.floor(200 * t)))
+        nvgText(nvg, nameX - 14, nameY + 16, "PLAYER", nil)
     end
 
-    -- 底部倒计时提示
+    -- 底部倒计时提示（可爱风格）
     local remaining = math.max(0, teamReveal_.duration - teamReveal_.timer)
     if remaining > 0 then
-        nvgFontSize(nvg, 16)
+        nvgFontSize(nvg, 18)
         nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
-        nvgFillColor(nvg, nvgRGBA(200, 200, 200, 180))
-        nvgText(nvg, sw/2, sh - 20, string.format("%.1f 秒后开始...", remaining), nil)
+        nvgFillColor(nvg, nvgRGBA(180, 100, 160, 220))
+        nvgText(nvg, sw/2, sh - 24, string.format("%.1f 秒后开始...", remaining), nil)
     end
 end
 
@@ -3001,68 +3073,89 @@ function DrawTeamBanner()
     local nvg = nvg_
     local sw, sh = screenW_, screenH_
 
-    -- 背景（与 team_reveal 一致的深色）
+    -- 背景（与 team_reveal 一致的粉蓝渐变）
     nvgBeginPath(nvg)
     nvgRect(nvg, 0, 0, sw, sh)
-    local bg = nvgLinearGradient(nvg, 0, 0, 0, sh,
-        nvgRGBA(15, 20, 40, 255), nvgRGBA(5, 8, 20, 255))
+    local bg = nvgLinearGradient(nvg, 0, 0, sw, sh,
+        nvgRGBA(200, 230, 255, 255), nvgRGBA(255, 210, 230, 255))
     nvgFillPaint(nvg, bg)
     nvgFill(nvg)
+
+    -- 装饰圆点（与 team_reveal 一致）
+    for i = 1, 12 do
+        local dx = (sw * ((i * 137) % 100) / 100)
+        local dy = (sh * ((i * 73 + 29) % 100) / 100)
+        local pulse = 0.6 + 0.4 * math.sin(teamBanner_.timer * 2.0 + i * 0.8)
+        local dotR = 4 + (i % 3) * 3
+        nvgBeginPath(nvg)
+        nvgCircle(nvg, dx, dy, dotR * pulse)
+        if i % 2 == 0 then
+            nvgFillColor(nvg, nvgRGBA(255, 150, 200, math.floor(80 * pulse)))
+        else
+            nvgFillColor(nvg, nvgRGBA(100, 200, 255, math.floor(80 * pulse)))
+        end
+        nvgFill(nvg)
+    end
 
     -- 横幅动画参数
     local t = teamBanner_.timer
     local dur = teamBanner_.duration
-    local slideIn = 0.4    -- 飘入时间
-    local pauseEnd = dur - 0.5  -- 飘出开始时间
-    local slideOut = 0.5   -- 飘出时间
+    local slideIn = 0.4
+    local pauseEnd = dur - 0.5
+    local slideOut = 0.5
 
     -- 计算横幅 X 位置
     local bannerX
     if t < slideIn then
-        -- 从左侧飘入中间
         local p = t / slideIn
-        -- 缓入效果 (easeOutCubic)
         p = 1 - (1 - p) * (1 - p) * (1 - p)
-        bannerX = -sw * 0.5 + (sw * 0.5) * p  -- 从 -sw/2 到 0（中心偏移）
+        bannerX = -sw * 0.5 + (sw * 0.5) * p
     elseif t < pauseEnd then
-        -- 停在中间
         bannerX = 0
     else
-        -- 飘出到右侧
         local p = (t - pauseEnd) / slideOut
-        -- 缓出效果 (easeInCubic)
         p = p * p * p
-        bannerX = sw * 0.5 * p  -- 从 0 到 sw/2
+        bannerX = sw * 0.5 * p
     end
 
-    -- 横幅本体
-    local bannerH = 70
+    -- 横幅本体（白色圆角卡片风格）
+    local bannerH = 80
     local bannerY = sh / 2 - bannerH / 2
     local centerX = sw / 2 + bannerX
 
-    -- 横幅背景条
+    -- 横幅阴影
     nvgBeginPath(nvg)
-    nvgRect(nvg, centerX - sw * 0.45, bannerY, sw * 0.9, bannerH)
-    nvgFillColor(nvg, nvgRGBA(20, 20, 40, 230))
+    nvgRoundedRect(nvg, centerX - sw * 0.4 + 3, bannerY + 4, sw * 0.8, bannerH, 20)
+    nvgFillColor(nvg, nvgRGBA(0, 0, 0, 25))
     nvgFill(nvg)
 
-    -- 上下金色边线
+    -- 横幅白色背景
     nvgBeginPath(nvg)
-    nvgRect(nvg, centerX - sw * 0.45, bannerY, sw * 0.9, 3)
-    nvgFillColor(nvg, nvgRGBA(255, 200, 60, 220))
-    nvgFill(nvg)
-    nvgBeginPath(nvg)
-    nvgRect(nvg, centerX - sw * 0.45, bannerY + bannerH - 3, sw * 0.9, 3)
-    nvgFillColor(nvg, nvgRGBA(255, 200, 60, 220))
+    nvgRoundedRect(nvg, centerX - sw * 0.4, bannerY, sw * 0.8, bannerH, 20)
+    nvgFillColor(nvg, nvgRGBA(255, 255, 255, 240))
     nvgFill(nvg)
 
-    -- 横幅文字
+    -- 上下粉色渐变边线
+    nvgBeginPath(nvg)
+    nvgRoundedRect(nvg, centerX - sw * 0.4, bannerY, sw * 0.8, 3, 2)
+    local topLine = nvgLinearGradient(nvg, centerX - sw*0.4, bannerY, centerX + sw*0.4, bannerY,
+        nvgRGBA(100, 200, 255, 220), nvgRGBA(255, 130, 200, 220))
+    nvgFillPaint(nvg, topLine)
+    nvgFill(nvg)
+    nvgBeginPath(nvg)
+    nvgRoundedRect(nvg, centerX - sw * 0.4, bannerY + bannerH - 3, sw * 0.8, 3, 2)
+    local botLine = nvgLinearGradient(nvg, centerX - sw*0.4, bannerY+bannerH, centerX + sw*0.4, bannerY+bannerH,
+        nvgRGBA(255, 130, 200, 220), nvgRGBA(100, 200, 255, 220))
+    nvgFillPaint(nvg, botLine)
+    nvgFill(nvg)
+
+    -- 横幅文字（粉紫色，加大字号）
     local winScore = GetWinScore()
-    local text = "率先达到 " .. winScore .. " 分的队伍获得胜利"
-    nvgFontSize(nvg, 28)
+    local text = "率先达到 " .. winScore .. " 分的队伍获得胜利!"
+    nvgFontSize(nvg, 40)
     nvgFontFace(nvg, "sans")
     nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(nvg, nvgRGBA(255, 220, 80, 255))
+    nvgFillColor(nvg, nvgRGBA(180, 60, 140, 255))
     nvgText(nvg, centerX, bannerY + bannerH / 2, text, nil)
 end
 

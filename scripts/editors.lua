@@ -14,6 +14,7 @@ local M = {}
 M.skinEditorOpen = false
 M.terrainEditorOpen = false
 M.gameplayGMOpen = false
+M.scoreGMOpen = false
 M.editorMenuOpen = false
 M.skinEditorAnimTime = 0  -- 预览动画计时器
 M.gmForceGameplay = nil   -- 强制玩法索引（生效一次后自动清除）
@@ -24,6 +25,7 @@ local editorMenuPanel_ = nil
 local terrainEditorPanel_ = nil
 local gameplayGMPanel_ = nil
 local gameplayGMButtons_ = {}  -- 玩法按钮引用列表
+local scoreGMPanel_ = nil
 local exportPopup_ = nil
 
 -- 地形编辑器拖拽状态
@@ -59,6 +61,10 @@ function M.ToggleEditorMenu()
     end
     if M.gameplayGMOpen then
         M.ToggleGameplayGM()
+        return
+    end
+    if M.scoreGMOpen then
+        M.ToggleScoreGM()
         return
     end
 
@@ -110,6 +116,14 @@ function M.CreateEditorMenu()
                             M.editorMenuOpen = false
                             editorMenuPanel_:SetVisible(false)
                             M.ToggleGameplayGM()
+                        end
+                    },
+                    UI.Button {
+                        text = "分数 GM", variant = "outline", width = "100%", height = 38,
+                        onClick = function()
+                            M.editorMenuOpen = false
+                            editorMenuPanel_:SetVisible(false)
+                            M.ToggleScoreGM()
                         end
                     },
                 }
@@ -753,6 +767,72 @@ function M.ToggleGameplayGM()
         RefreshGMButtons()
     end
 end
+
+-- ============================================================================
+-- 分数 GM
+-- ============================================================================
+
+function M.ToggleScoreGM()
+    M.scoreGMOpen = not M.scoreGMOpen
+    if scoreGMPanel_ then
+        scoreGMPanel_:SetVisible(M.scoreGMOpen)
+    end
+end
+
+function M.CreateScoreGM()
+    local function addScore(teamIdx, amount)
+        if G and G.teams then
+            G.teams[teamIdx].score = G.teams[teamIdx].score + amount
+            print(string.format("[GM] %s +%d → %d", G.teams[teamIdx].name, amount, G.teams[teamIdx].score))
+            -- 刷新分数 UI（通过全局函数）
+            if UpdateScoreUI then UpdateScoreUI() end
+        end
+    end
+
+    scoreGMPanel_ = UI.Panel {
+        id = "scoreGM",
+        position = "absolute",
+        top = 50, right = 10,
+        width = 200,
+        backgroundColor = {20, 20, 30, 220},
+        borderRadius = 8,
+        padding = 12,
+        gap = 8,
+        children = {
+            UI.Label { text = "分数 GM (Tab 关闭)", fontSize = 14, fontColor = {255, 180, 80, 255} },
+            -- 蓝队
+            UI.Label { text = "蓝队", fontSize = 12, fontColor = {80, 140, 255, 255} },
+            UI.Panel {
+                flexDirection = "row", gap = 6, width = "100%",
+                children = {
+                    UI.Button { text = "+1", variant = "outline", flexGrow = 1, height = 30, onClick = function() addScore(1, 1) end },
+                    UI.Button { text = "+10", variant = "outline", flexGrow = 1, height = 30, onClick = function() addScore(1, 10) end },
+                    UI.Button { text = "+100", variant = "outline", flexGrow = 1, height = 30, onClick = function() addScore(1, 100) end },
+                }
+            },
+            -- 红队
+            UI.Label { text = "红队", fontSize = 12, fontColor = {255, 90, 80, 255} },
+            UI.Panel {
+                flexDirection = "row", gap = 6, width = "100%",
+                children = {
+                    UI.Button { text = "+1", variant = "outline", flexGrow = 1, height = 30, onClick = function() addScore(2, 1) end },
+                    UI.Button { text = "+10", variant = "outline", flexGrow = 1, height = 30, onClick = function() addScore(2, 10) end },
+                    UI.Button { text = "+100", variant = "outline", flexGrow = 1, height = 30, onClick = function() addScore(2, 100) end },
+                }
+            },
+        }
+    }
+    scoreGMPanel_:SetVisible(false)
+
+    local root = UI.FindById("root")
+    if root then
+        root:AddChild(scoreGMPanel_)
+    end
+end
+
+-- ============================================================================
+-- 玩法 GM
+-- ============================================================================
 
 function M.CreateGameplayGM()
     local GAMEPLAY_DATA = Cfg.GAMEPLAY_DATA
