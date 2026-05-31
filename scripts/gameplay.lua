@@ -442,7 +442,7 @@ function M.SpawnBullets()
     for i = 1, Cfg.BULLET_COUNT do
         -- 从顶部随机X位置生成
         local x = (math.random() - 0.5) * mapW * 0.7
-        local topY = mapH / 2 - 0.5  -- 略低于顶边
+        local topY = mapH / 2 - 0.1  -- 接近顶边
 
         -- 随机向下的角度（-60° ~ -120°，即大致朝下）
         local angle = math.rad(-60 - math.random() * 60)

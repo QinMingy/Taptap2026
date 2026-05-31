@@ -129,6 +129,12 @@ function M.Init(gameState)
     cloudImage_ = nvgCreateImage(G.nvg, "image/img_v3_02126_97886e77-a440-4381-a610-264ae30d98bg.png", 0)
     print("[Render] Cloud image loaded: " .. tostring(cloudImage_))
 
+    -- 加载结算画面背景框
+    gameOverFrameImg_ = nvgCreateImage(G.nvg, "image/edited_gameover_frame_20260531032825.png", 0)
+    print("[Render] GameOver frame loaded: " .. tostring(gameOverFrameImg_))
+    loseCryImg_ = nvgCreateImage(G.nvg, "image/lose_cry_photo.png", 0)
+    print("[Render] Lose cry photo loaded: " .. tostring(loseCryImg_))
+
     local cloudCount = math.random(2, 3)
     clouds_ = {}
     for i = 1, cloudCount do
@@ -533,6 +539,28 @@ function M.DrawPhotoZone()
     local pw = G.photoZone.width * ppu
     local ph = G.photoZone.height * ppu
     DrawSinglePhotoZoneFrame(nvg, sx, sy, pw, ph, "📷 拍照区域")
+
+    -- 金币玩法：在拍照区域上方显示闪动提示文字
+    local gp = GAMEPLAY_DATA[G.unlock.currentGameplayIndex]
+    if gp.scoringRule == "coin_top3" then
+        local flashAlpha = math.floor(140 + 115 * math.sin(G.globalTime * 6))
+        local hintY = sy - ph / 2 - 48
+        nvgFontSize(nvg, 22)
+        nvgFontFace(nvg, "sans")
+        nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+        -- 黑色描边
+        nvgFillColor(nvg, nvgRGBA(0, 0, 0, flashAlpha))
+        for ox = -1, 1 do
+            for oy = -1, 1 do
+                if ox ~= 0 or oy ~= 0 then
+                    nvgText(nvg, sx + ox, hintY + oy, "需拾取3枚以上金币", nil)
+                end
+            end
+        end
+        -- 主体文字（金黄色闪动）
+        nvgFillColor(nvg, nvgRGBA(255, 240, 80, flashAlpha))
+        nvgText(nvg, sx, hintY, "需拾取3枚以上金币", nil)
+    end
 end
 
 -- ============================================================================
@@ -1189,6 +1217,49 @@ function M.DrawBullets(bullets, currentGameplayIndex, bulletTime)
     end
 end
 
+--- 绘制拍照快照中的子弹（用于照片展示）
+function M.DrawBulletsSnapshot()
+    local bullets = G.bulletSnapshot
+    if not bullets or #bullets == 0 then return end
+
+    local gp = GAMEPLAY_DATA[G.unlock.currentGameplayIndex]
+    if not gp.dodgeBullet then return end
+
+    local nvg = G.nvg
+    local ppu = M.GetPixelsPerUnit()
+
+    for _, b in ipairs(bullets) do
+        local sx, sy = M.PhysToScreen(b.x, b.y)
+        local r = Cfg.BULLET_RADIUS * ppu
+
+        nvgSave(nvg)
+        nvgTranslate(nvg, sx, sy)
+
+        -- 子弹外圈发光
+        nvgBeginPath(nvg)
+        nvgCircle(nvg, 0, 0, r * 1.4)
+        nvgFillColor(nvg, nvgRGBA(255, 80, 50, 70))
+        nvgFill(nvg)
+
+        -- 子弹主体
+        nvgBeginPath(nvg)
+        nvgCircle(nvg, 0, 0, r)
+        nvgFillColor(nvg, nvgRGBA(255, 60, 40, 255))
+        nvgFill(nvg)
+        nvgStrokeColor(nvg, nvgRGBA(200, 30, 20, 255))
+        nvgStrokeWidth(nvg, 2)
+        nvgStroke(nvg)
+
+        -- 内部高光
+        nvgBeginPath(nvg)
+        nvgCircle(nvg, -r * 0.25, -r * 0.25, r * 0.4)
+        nvgFillColor(nvg, nvgRGBA(255, 200, 150, 150))
+        nvgFill(nvg)
+
+        nvgRestore(nvg)
+    end
+end
+
 function M.DrawPlayerCoinCount(playerCoins, currentGameplayIndex)
     local gp = GAMEPLAY_DATA[currentGameplayIndex]
     if gp.scoringRule ~= "coin_top3" then return end
@@ -1309,7 +1380,7 @@ function M.DrawTugScores()
         pushAmount = ratio * 100  -- 最大偏移 100px，压迫感更强
     end
 
-    local centerY = sh - 100
+    local bottomY = sh - 70  -- 固定底部基线，文字向上生长
     local leftX = sw / 2 - baseGap + pushAmount
     local rightX = sw / 2 + baseGap + pushAmount
 
@@ -1329,18 +1400,18 @@ function M.DrawTugScores()
     -- === "VS" 中央文字 ===
     nvgFontSize(nvg, 26)
     nvgFontFace(nvg, "sans")
-    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
     nvgFillColor(nvg, nvgRGBA(255, 255, 255, 220))
-    nvgText(nvg, sw / 2 + pushAmount * 0.3, centerY, "VS", nil)
+    nvgText(nvg, sw / 2 + pushAmount * 0.3, bottomY, "VS", nil)
 
     -- === 左队数字（加粗 + 描边 + 缩放 + 抖动） ===
     local fontSize1 = math.floor(baseSize * scale1)
     local numX1 = leftX + shake1X
-    local numY1 = centerY + shake1Y
+    local numY1 = bottomY + shake1Y  -- 底部对齐，向上生长
 
     nvgFontSize(nvg, fontSize1)
     nvgFontFace(nvg, "sans")
-    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
     -- 描边（黑色粗边）
     nvgStrokeColor(nvg, nvgRGBA(0, 0, 0, 220))
     nvgStrokeWidth(nvg, 4 + scale1)
@@ -1363,10 +1434,10 @@ function M.DrawTugScores()
     -- === 右队数字（加粗 + 描边 + 缩放 + 抖动） ===
     local fontSize2 = math.floor(baseSize * scale2)
     local numX2 = rightX + shake2X
-    local numY2 = centerY + shake2Y
+    local numY2 = bottomY + shake2Y  -- 底部对齐，向上生长
 
     nvgFontSize(nvg, fontSize2)
-    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
     -- 描边
     nvgFillColor(nvg, nvgRGBA(0, 0, 0, 220))
     for ox = -2, 2 do
@@ -1386,7 +1457,7 @@ function M.DrawTugScores()
     -- === 按钮：两个被疯狂按动的大按钮，位于数字下方 ===
     local btnW = 90
     local btnH = 50
-    local btnY = centerY + math.max(fontSize1, fontSize2) * 0.5 + 20
+    local btnY = bottomY + 15  -- 按钮固定在数字底线下方
     local btnRadius = 12
 
     -- 按钮按压动画：利用点击数的快速变化模拟弹跳
@@ -1732,6 +1803,9 @@ function M.DrawShowPhoto()
     nvgStrokeWidth(nvg, 3)
     nvgStroke(nvg)
 
+    -- 照片中的子弹快照
+    M.DrawBulletsSnapshot()
+
     M.DrawPlayersSnapshot()
 
     nvgRestore(nvg)
@@ -1753,24 +1827,6 @@ function M.DrawShowPhoto()
     nvgFillPaint(nvg, botVig)
     nvgFill(nvg)
 
-    -- 底部结果文字
-    local textY = photoY + photoH + frameBottom * 0.5
-    nvgFontSize(nvg, math.max(16, math.floor(frameBottom * 0.35)))
-    nvgFontFace(nvg, "sans")
-    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-
-    if #G.roundResult > 0 then
-        local names = {}
-        for _, idx in ipairs(G.roundResult) do
-            table.insert(names, G.players[idx].config.name)
-        end
-        nvgFillColor(nvg, nvgRGBA(40, 160, 60, math.floor(255 * progress)))
-        nvgText(nvg, sw / 2, textY, table.concat(names, " & ") .. " 入镜! +1", nil)
-    else
-        nvgFillColor(nvg, nvgRGBA(200, 80, 80, math.floor(255 * progress)))
-        nvgText(nvg, sw / 2, textY, "没人入镜!", nil)
-    end
-
     -- 顶部 PHOTO 标签
     nvgFontSize(nvg, 13)
     nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
@@ -1782,6 +1838,297 @@ function M.DrawShowPhoto()
     -- ====================================================================
     if showRule and ruleProgress > 0 then
         M.DrawNextRulePanel(sw, sh, photoAreaH, ruleAreaH, ruleProgress)
+    end
+
+    -- ====================================================================
+    -- 拍立得外部下方：入镜角色弹性出场动画 + 头顶得分飘字（层级高于规则面板）
+    -- 按队伍分组，用队伍颜色线框圈起来，每个头像带 P1/P2 徽章
+    -- ====================================================================
+    if #G.roundResult > 0 then
+        -- 动画时间
+        local animStartDelay = 0.4
+        local perCharDelay = 0.25
+        local elapsed = (2.5 - G.showPhotoTimer)
+
+        -- 按队伍分组
+        local team1Members = {} -- 蓝队入镜成员
+        local team2Members = {} -- 红队入镜成员
+        for _, idx in ipairs(G.roundResult) do
+            local teamIdx = G.playerTeam and G.playerTeam[idx] or 1
+            if teamIdx == 1 then
+                table.insert(team1Members, idx)
+            else
+                table.insert(team2Members, idx)
+            end
+        end
+
+        local charAreaY = photoY + photoH + frameBottom * 0.5
+        local avatarR = 28
+        local avatarSpacing = 64 -- 同组内头像间距
+        local groupGap = 30 -- 两组之间间距
+        local groupPadX = 16 -- 组框左右内边距
+        local groupPadY = 12 -- 组框上下内边距
+
+        -- 计算各组宽度
+        local function groupWidth(members)
+            if #members == 0 then return 0 end
+            return (#members - 1) * avatarSpacing + avatarR * 2 + groupPadX * 2
+        end
+        local w1 = groupWidth(team1Members)
+        local w2 = groupWidth(team2Members)
+        local totalGroupW = w1 + w2 + (w1 > 0 and w2 > 0 and groupGap or 0)
+
+        -- 起始 X（居中排列）
+        local startX = sw / 2 - totalGroupW / 2
+
+        -- easeOutBack 弹性缓动
+        local function easeOutBack(t)
+            local c1 = 1.70158
+            local c3 = c1 + 1
+            return 1 + c3 * math.pow(t - 1, 3) + c1 * math.pow(t - 1, 2)
+        end
+
+        -- 绘制一组队伍
+        local globalSeq = 0 -- 全局顺序计数（用于动画延迟）
+        local function drawTeamGroup(members, groupX, teamColor)
+            if #members == 0 then return end
+
+            -- 组框动画（取组内第一个成员的动画进度）
+            local firstDelay = animStartDelay + globalSeq * perCharDelay
+            local groupElapsed = elapsed - firstDelay
+            local groupT = math.min(1.0, math.max(0, groupElapsed / 0.5))
+            local groupEased = easeOutBack(math.max(0.01, groupT))
+
+            -- 绘制队伍颜色线框（圆角矩形）
+            if groupT > 0 then
+                local gfW = (#members - 1) * avatarSpacing + avatarR * 2 + groupPadX * 2
+                local gfH = avatarR * 2 + groupPadY * 2
+                local gfX = groupX
+                local gfTopY = charAreaY - avatarR - groupPadY
+
+                nvgSave(nvg)
+                nvgGlobalAlpha(nvg, math.min(1.0, groupEased) * progress)
+                nvgBeginPath(nvg)
+                nvgRoundedRect(nvg, gfX, gfTopY, gfW, gfH, 12)
+                nvgStrokeColor(nvg, nvgRGBA(teamColor[1], teamColor[2], teamColor[3], math.floor(200 * groupEased)))
+                nvgStrokeWidth(nvg, 2.5)
+                nvgStroke(nvg)
+                -- 半透明填充
+                nvgFillColor(nvg, nvgRGBA(teamColor[1], teamColor[2], teamColor[3], math.floor(20 * groupEased)))
+                nvgFill(nvg)
+                nvgRestore(nvg)
+            end
+
+            -- 绘制每个成员头像
+            for i, idx in ipairs(members) do
+                local p = G.players[idx]
+                if not p then
+                    globalSeq = globalSeq + 1
+                    goto continue_team_member
+                end
+
+                local skinIdx = p.config.skinIndex or 1
+                local skin = G.skinsRuntime[skinIdx]
+                local charDelay = animStartDelay + globalSeq * perCharDelay
+                local charElapsed = elapsed - charDelay
+                globalSeq = globalSeq + 1
+
+                if charElapsed > 0 then
+                    local animDuration = 0.5
+                    local t = math.min(1.0, charElapsed / animDuration)
+                    local easedT = easeOutBack(t)
+
+                    local cx = groupX + groupPadX + avatarR + (i - 1) * avatarSpacing
+                    local cy = charAreaY
+
+                    -- 从下方弹入
+                    local startOffsetY = 60
+                    local currentOffsetY = startOffsetY * (1.0 - easedT)
+                    local drawY = cy + currentOffsetY
+                    local scaleVal = easedT
+                    local drawAlpha = math.min(1.0, easedT * 1.5)
+
+                    nvgSave(nvg)
+                    nvgGlobalAlpha(nvg, drawAlpha * progress)
+
+                    local headImg = skin and skin.headImg or -1
+                    local tc = p.config.color
+
+                    -- 发光光环
+                    local glowPhase = math.sin((G.globalTime or 0) * 3.0 + globalSeq * 1.2) * 0.3 + 0.7
+                    nvgBeginPath(nvg)
+                    nvgCircle(nvg, cx, drawY, avatarR + 6 + glowPhase * 3)
+                    nvgFillColor(nvg, nvgRGBA(tc[1], tc[2], tc[3], math.floor(30 * scaleVal)))
+                    nvgFill(nvg)
+
+                    -- 星星粒子
+                    local starCount = 3
+                    local starTime = (G.globalTime or 0) * 2.0 + globalSeq * 0.8
+                    for si = 1, starCount do
+                        local angle = starTime + (si / starCount) * math.pi * 2
+                        local dist = avatarR + 10 + math.sin(starTime * 1.5 + si) * 4
+                        local sx2 = cx + math.cos(angle) * dist
+                        local sy2 = drawY + math.sin(angle) * dist
+                        local starSize = 2.0 + math.sin(starTime * 3 + si * 2) * 0.8
+                        nvgBeginPath(nvg)
+                        nvgCircle(nvg, sx2, sy2, starSize * scaleVal)
+                        nvgFillColor(nvg, nvgRGBA(255, 220, 80, math.floor(160 * scaleVal)))
+                        nvgFill(nvg)
+                    end
+
+                    -- 头像背景圈（队伍色）
+                    nvgBeginPath(nvg)
+                    nvgCircle(nvg, cx, drawY, avatarR + 3)
+                    nvgFillColor(nvg, nvgRGBA(tc[1], tc[2], tc[3], math.floor(200 * scaleVal)))
+                    nvgFill(nvg)
+
+                    -- 头像
+                    if headImg and headImg > 0 then
+                        nvgBeginPath(nvg)
+                        nvgCircle(nvg, cx, drawY, avatarR)
+                        local imgPaint = nvgImagePattern(nvg, cx - avatarR, drawY - avatarR,
+                            avatarR * 2, avatarR * 2, 0, headImg, 1.0)
+                        nvgFillPaint(nvg, imgPaint)
+                        nvgFill(nvg)
+                    else
+                        nvgBeginPath(nvg)
+                        nvgCircle(nvg, cx, drawY, avatarR)
+                        nvgFillColor(nvg, nvgRGBA(tc[1], tc[2], tc[3], math.floor(255 * scaleVal)))
+                        nvgFill(nvg)
+                    end
+
+                    -- P1/P2 徽章（右下角小圆）
+                    local badgeR = 11
+                    local badgeX = cx + avatarR * 0.65
+                    local badgeY = drawY + avatarR * 0.65
+                    -- 徽章背景
+                    nvgBeginPath(nvg)
+                    nvgCircle(nvg, badgeX, badgeY, badgeR)
+                    nvgFillColor(nvg, nvgRGBA(tc[1], tc[2], tc[3], math.floor(240 * scaleVal)))
+                    nvgFill(nvg)
+                    -- 徽章边框
+                    nvgBeginPath(nvg)
+                    nvgCircle(nvg, badgeX, badgeY, badgeR)
+                    nvgStrokeColor(nvg, nvgRGBA(255, 255, 255, math.floor(220 * scaleVal)))
+                    nvgStrokeWidth(nvg, 1.5)
+                    nvgStroke(nvg)
+                    -- 徽章文字
+                    nvgFontSize(nvg, 11)
+                    nvgFontFace(nvg, "sans")
+                    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+                    nvgFillColor(nvg, nvgRGBA(255, 255, 255, math.floor(255 * scaleVal)))
+                    nvgText(nvg, badgeX, badgeY, p.config.name or ("P" .. idx), nil)
+
+                    -- 头顶得分飘字（不消失）
+                    local scoreText = "+1"
+                    local scoreY = drawY - avatarR - 16
+                    local textAnimT = math.min(1.0, math.max(0, (charElapsed - 0.2) / 0.3))
+                    local textEased = easeOutBack(textAnimT)
+                    local textScale = textEased
+                    local textOffsetY = (1.0 - textEased) * 15
+
+                    if textAnimT > 0 then
+                        nvgSave(nvg)
+                        nvgTranslate(nvg, cx, scoreY - textOffsetY)
+                        nvgScale(nvg, textScale, textScale)
+                        nvgTranslate(nvg, -cx, -(scoreY - textOffsetY))
+
+                        nvgFontSize(nvg, 22)
+                        nvgFontFace(nvg, "sans")
+                        nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+                        -- 描边
+                        nvgFillColor(nvg, nvgRGBA(0, 0, 0, math.floor(180 * textAnimT)))
+                        local ofs = 1.5
+                        for ox = -ofs, ofs, ofs do
+                            for oy = -ofs, ofs, ofs do
+                                if ox ~= 0 or oy ~= 0 then
+                                    nvgText(nvg, cx + ox, scoreY - textOffsetY + oy, scoreText, nil)
+                                end
+                            end
+                        end
+                        -- 金色文字
+                        nvgFillColor(nvg, nvgRGBA(255, 220, 50, math.floor(255 * textAnimT)))
+                        nvgText(nvg, cx, scoreY - textOffsetY, scoreText, nil)
+                        nvgRestore(nvg)
+                    end
+
+                    nvgRestore(nvg)
+                end
+
+                ::continue_team_member::
+            end
+        end
+
+        -- 绘制蓝队组（左侧）
+        local curX = startX
+        if #team1Members > 0 then
+            local tc1 = G.teams and G.teams[1] and G.teams[1].color or {80, 140, 255, 255}
+            drawTeamGroup(team1Members, curX, tc1)
+            curX = curX + w1 + groupGap
+        end
+        -- 绘制红队组（右侧）
+        if #team2Members > 0 then
+            local tc2 = G.teams and G.teams[2] and G.teams[2].color or {255, 90, 80, 255}
+            drawTeamGroup(team2Members, curX, tc2)
+        end
+    else
+        -- 没人入镜：显示红色X特效（层级高于规则面板）
+        local animElapsed = (2.5 - G.showPhotoTimer) - 0.3
+        if animElapsed > 0 then
+            local failY = photoY + photoH + frameBottom * 0.5
+            local function easeOutBack(t)
+                local c1 = 1.70158
+                local c3 = c1 + 1
+                return 1 + c3 * math.pow(t - 1, 3) + c1 * math.pow(t - 1, 2)
+            end
+            local t = math.min(1.0, animElapsed / 0.4)
+            local easedT = easeOutBack(t)
+            local scaleVal = easedT
+
+            nvgSave(nvg)
+            nvgGlobalAlpha(nvg, progress)
+            nvgTranslate(nvg, sw / 2, failY)
+            nvgScale(nvg, scaleVal, scaleVal)
+            nvgTranslate(nvg, -(sw / 2), -failY)
+
+            -- 红色X图标
+            local xSize = 18
+            nvgBeginPath(nvg)
+            nvgCircle(nvg, sw / 2, failY, 28)
+            nvgFillColor(nvg, nvgRGBA(220, 60, 60, math.floor(200 * scaleVal)))
+            nvgFill(nvg)
+            nvgBeginPath(nvg)
+            nvgMoveTo(nvg, sw / 2 - xSize, failY - xSize)
+            nvgLineTo(nvg, sw / 2 + xSize, failY + xSize)
+            nvgMoveTo(nvg, sw / 2 + xSize, failY - xSize)
+            nvgLineTo(nvg, sw / 2 - xSize, failY + xSize)
+            nvgStrokeColor(nvg, nvgRGBA(255, 255, 255, math.floor(255 * scaleVal)))
+            nvgStrokeWidth(nvg, 4)
+            nvgLineCap(nvg, NVG_ROUND)
+            nvgStroke(nvg)
+
+            nvgRestore(nvg)
+
+            -- "无人入镜" 文字说明
+            nvgSave(nvg)
+            nvgGlobalAlpha(nvg, progress * math.min(1.0, easedT))
+            nvgFontSize(nvg, 18)
+            nvgFontFace(nvg, "sans")
+            nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+            -- 描边
+            nvgFillColor(nvg, nvgRGBA(0, 0, 0, 150))
+            local ofs = 1.0
+            for ox = -ofs, ofs, ofs do
+                for oy = -ofs, ofs, ofs do
+                    if ox ~= 0 or oy ~= 0 then
+                        nvgText(nvg, sw / 2 + ox, failY + 34 + oy, "无人入镜", nil)
+                    end
+                end
+            end
+            nvgFillColor(nvg, nvgRGBA(255, 255, 255, 230))
+            nvgText(nvg, sw / 2, failY + 34, "无人入镜", nil)
+            nvgRestore(nvg)
+        end
     end
 
     nvgRestore(nvg)
@@ -2083,11 +2430,20 @@ function M.DrawGameOver()
     local nvg = G.nvg
     local sw, sh = G.screenW, G.screenH
 
-    -- 半透明遮罩
-    nvgBeginPath(nvg)
-    nvgRect(nvg, 0, 0, sw, sh)
-    nvgFillColor(nvg, nvgRGBA(20, 10, 30, 200))
-    nvgFill(nvg)
+    -- === 全屏背景图（装饰框） ===
+    if gameOverFrameImg_ and gameOverFrameImg_ > 0 then
+        nvgBeginPath(nvg)
+        nvgRect(nvg, 0, 0, sw, sh)
+        local imgPaint = nvgImagePattern(nvg, 0, 0, sw, sh, 0, gameOverFrameImg_, 1.0)
+        nvgFillPaint(nvg, imgPaint)
+        nvgFill(nvg)
+    else
+        -- fallback: 半透明遮罩
+        nvgBeginPath(nvg)
+        nvgRect(nvg, 0, 0, sw, sh)
+        nvgFillColor(nvg, nvgRGBA(20, 10, 30, 200))
+        nvgFill(nvg)
+    end
 
     -- 找出获胜队伍（或平局）
     local isDraw = (G.winner == "平局")
@@ -2103,30 +2459,19 @@ function M.DrawGameOver()
         if not winTeam then return end
     end
 
-    -- 主色调：获胜队颜色 或 平局用金色
+    -- 主色调
     local wc = isDraw and {255, 200, 60, 255} or winTeam.color
 
-    -- === 中央结算卡片背景 ===
-    local cardW = sw * 0.52
-    local cardH = sh * 0.7
-    local cardX = (sw - cardW) / 2
-    local cardY = (sh - cardH) / 2
+    -- === 内容区域（在装饰框的白色卡片内绘制） ===
+    -- 白色卡片大约在画面中心偏上，占比约 60%×55%
+    local contentW = sw * 0.55
+    local contentH = sh * 0.50
+    local contentX = (sw - contentW) / 2
+    local contentY = sh * 0.14
 
-    -- 卡片白色圆角背景
-    nvgBeginPath(nvg)
-    nvgRoundedRect(nvg, cardX, cardY, cardW, cardH, 18)
-    nvgFillColor(nvg, nvgRGBA(255, 250, 253, 235))
-    nvgFill(nvg)
-    -- 卡片边框
-    nvgBeginPath(nvg)
-    nvgRoundedRect(nvg, cardX, cardY, cardW, cardH, 18)
-    nvgStrokeColor(nvg, nvgRGBA(wc[1], wc[2], wc[3], 200))
-    nvgStrokeWidth(nvg, 3)
-    nvgStroke(nvg)
-
-    -- === 顶部标题 ===
-    local titleY = cardY + 50
-    nvgFontSize(nvg, 48)
+    -- === 顶部标题（大号） ===
+    local titleY = contentY + 40
+    nvgFontSize(nvg, 52)
     nvgFontFace(nvg, "sans")
     nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
     nvgFillColor(nvg, nvgRGBA(wc[1], wc[2], wc[3], 255))
@@ -2136,22 +2481,16 @@ function M.DrawGameOver()
         nvgText(nvg, sw / 2, titleY, winTeam.name .. " WIN!", nil)
     end
 
-    -- 装饰小星星
-    nvgFontSize(nvg, 20)
-    nvgText(nvg, sw / 2 - 100, titleY, "★", nil)
-    nvgText(nvg, sw / 2 + 100, titleY, "★", nil)
-
     -- === 分隔线 ===
-    local divY = titleY + 35
+    local divY = titleY + 40
     nvgBeginPath(nvg)
-    nvgMoveTo(nvg, cardX + 30, divY)
-    nvgLineTo(nvg, cardX + cardW - 30, divY)
-    nvgStrokeColor(nvg, nvgRGBA(wc[1], wc[2], wc[3], 80))
+    nvgMoveTo(nvg, contentX + 40, divY)
+    nvgLineTo(nvg, contentX + contentW - 40, divY)
+    nvgStrokeColor(nvg, nvgRGBA(wc[1], wc[2], wc[3], 100))
     nvgStrokeWidth(nvg, 1.5)
     nvgStroke(nvg)
 
     -- === 双列玩家分数 ===
-    -- 平局时用 teams[1]/[2]，否则用 winTeam/loseTeam
     local leftTeam = isDraw and G.teams[1] or winTeam
     local rightTeam = isDraw and G.teams[2] or loseTeam
 
@@ -2172,34 +2511,35 @@ function M.DrawGameOver()
         end
     end
 
-    -- 按分数从高到低排序
     table.sort(leftPlayers, function(a, b) return a.score > b.score end)
     table.sort(rightPlayers, function(a, b) return a.score > b.score end)
 
     -- 列布局参数
-    local colStartY = divY + 25
-    local rowH = 32
-    local leftColX = cardX + 30
-    local rightColX = sw / 2 + 15
-    local colW = cardW / 2 - 45
+    local colStartY = divY + 30
+    local rowH = 36
+    local leftColX = contentX + 40
+    local rightColX = sw / 2 + 20
+    local colW = contentW / 2 - 60
 
     local ltc = leftTeam.color
     local rtc = rightTeam.color
 
     -- 左列标题
-    nvgFontSize(nvg, 16)
+    nvgFontSize(nvg, 20)
     nvgFontFace(nvg, "sans")
     nvgTextAlign(nvg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
-    nvgFillColor(nvg, nvgRGBA(ltc[1], ltc[2], ltc[3], 220))
+    nvgFillColor(nvg, nvgRGBA(ltc[1], ltc[2], ltc[3], 240))
     nvgText(nvg, leftColX, colStartY, leftTeam.name, nil)
     nvgTextAlign(nvg, NVG_ALIGN_RIGHT + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg, nvgRGBA(120, 100, 140, 200))
     nvgText(nvg, leftColX + colW, colStartY, "得分", nil)
 
     -- 右列标题
     nvgTextAlign(nvg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
-    nvgFillColor(nvg, nvgRGBA(rtc[1], rtc[2], rtc[3], 220))
+    nvgFillColor(nvg, nvgRGBA(rtc[1], rtc[2], rtc[3], 240))
     nvgText(nvg, rightColX, colStartY, rightTeam.name, nil)
     nvgTextAlign(nvg, NVG_ALIGN_RIGHT + NVG_ALIGN_MIDDLE)
+    nvgFillColor(nvg, nvgRGBA(120, 100, 140, 200))
     nvgText(nvg, rightColX + colW, colStartY, "得分", nil)
 
     -- 左列玩家行
@@ -2208,18 +2548,18 @@ function M.DrawGameOver()
         local ec = entry.color
         -- 圆形标识
         nvgBeginPath(nvg)
-        nvgCircle(nvg, leftColX + 5, y, 5)
-        nvgFillColor(nvg, nvgRGBA(ec[1], ec[2], ec[3], 220))
+        nvgCircle(nvg, leftColX + 6, y, 6)
+        nvgFillColor(nvg, nvgRGBA(ec[1], ec[2], ec[3], 230))
         nvgFill(nvg)
         -- 玩家名
-        nvgFontSize(nvg, 15)
+        nvgFontSize(nvg, 18)
         nvgTextAlign(nvg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
-        nvgFillColor(nvg, nvgRGBA(80, 60, 100, 240))
-        nvgText(nvg, leftColX + 16, y, entry.name, nil)
+        nvgFillColor(nvg, nvgRGBA(60, 40, 80, 240))
+        nvgText(nvg, leftColX + 18, y, entry.name, nil)
         -- 分数
         nvgTextAlign(nvg, NVG_ALIGN_RIGHT + NVG_ALIGN_MIDDLE)
         nvgFillColor(nvg, nvgRGBA(ltc[1], ltc[2], ltc[3], 255))
-        nvgFontSize(nvg, 17)
+        nvgFontSize(nvg, 20)
         nvgText(nvg, leftColX + colW, y, tostring(entry.score), nil)
     end
 
@@ -2229,28 +2569,157 @@ function M.DrawGameOver()
         local ec = entry.color
         -- 圆形标识
         nvgBeginPath(nvg)
-        nvgCircle(nvg, rightColX + 5, y, 5)
-        nvgFillColor(nvg, nvgRGBA(ec[1], ec[2], ec[3], 220))
+        nvgCircle(nvg, rightColX + 6, y, 6)
+        nvgFillColor(nvg, nvgRGBA(ec[1], ec[2], ec[3], 230))
         nvgFill(nvg)
         -- 玩家名
-        nvgFontSize(nvg, 15)
+        nvgFontSize(nvg, 18)
         nvgTextAlign(nvg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
-        nvgFillColor(nvg, nvgRGBA(80, 60, 100, 240))
-        nvgText(nvg, rightColX + 16, y, entry.name, nil)
+        nvgFillColor(nvg, nvgRGBA(60, 40, 80, 240))
+        nvgText(nvg, rightColX + 18, y, entry.name, nil)
         -- 分数
         nvgTextAlign(nvg, NVG_ALIGN_RIGHT + NVG_ALIGN_MIDDLE)
         nvgFillColor(nvg, nvgRGBA(rtc[1], rtc[2], rtc[3], 255))
-        nvgFontSize(nvg, 17)
+        nvgFontSize(nvg, 20)
         nvgText(nvg, rightColX + colW, y, tostring(entry.score), nil)
     end
 
-    -- === 底部提示 ===
-    local bottomY = cardY + cardH - 30
-    nvgFontSize(nvg, 16)
-    nvgFontFace(nvg, "sans")
-    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(nvg, nvgRGBA(140, 120, 160, 200))
-    nvgText(nvg, sw / 2, bottomY, "按 R 重新开始", nil)
+    -- === 角色展示区域（单排横向，左队 + 右队） ===
+    if not isDraw then
+        local gridStartY = colStartY + math.max(#leftPlayers, #rightPlayers) * rowH + 30
+        local halfW = contentW * 0.5
+        local numLeft = math.max(1, #leftTeam.members)
+        local numRight = math.max(1, #loseTeam.members)
+        local leftSpacing = halfW / (numLeft + 1)
+        local rightSpacing = halfW / (numRight + 1)
+
+        -- 绘制胜利方角色（左半单排）——双手过头庆祝
+        for idx, pi in ipairs(leftTeam.members) do
+            local cx = contentX + idx * leftSpacing
+            local cy = gridStartY + 40
+
+            local pdata = G.players[pi]
+            if pdata then
+                local skinIdx = pdata.config.skinIndex or 1
+                local skin = G.skinsRuntime[skinIdx]
+                -- 脚下圆圈（椭圆阴影）
+                nvgBeginPath(nvg)
+                nvgEllipse(nvg, cx, cy + 22, 18, 7)
+                local pc = pdata.config.color
+                nvgFillColor(nvg, nvgRGBA(pc[1], pc[2], pc[3], 60))
+                nvgFill(nvg)
+                nvgBeginPath(nvg)
+                nvgEllipse(nvg, cx, cy + 22, 18, 7)
+                nvgStrokeColor(nvg, nvgRGBA(pc[1], pc[2], pc[3], 120))
+                nvgStrokeWidth(nvg, 1.5)
+                nvgStroke(nvg)
+                -- 胜利姿势：手臂举过头顶
+                M.DrawSinglePlayer({
+                    sx = cx, sy = cy,
+                    color = pdata.config.color,
+                    skin = skin,
+                    facing = 1,
+                    limbSwing = 0.15,
+                    armSwing = -(math.pi + 0.5),  -- 双手高举
+                    inAir = false,
+                    isMoving = false,
+                    onGround = true,
+                    velY = 0,
+                    name = pdata.config.name,
+                    scaleX = 1.0,
+                    scaleY = 1.0,
+                    showGlow = false,
+                    playerIndex = pi,
+                })
+                -- 胜利星星特效
+                local t = G.globalTime or 0
+                for s = 1, 3 do
+                    local starAngle = t * 2.0 + s * 2.1
+                    local starDist = 18 + math.sin(t * 3 + s) * 4
+                    local starX = cx + math.cos(starAngle) * starDist
+                    local starY = cy - 28 + math.sin(starAngle) * starDist * 0.6
+                    nvgFontSize(nvg, 12)
+                    nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+                    nvgFillColor(nvg, nvgRGBA(255, 220, 50, 200))
+                    nvgText(nvg, starX, starY, "★", nil)
+                end
+            end
+        end
+
+        -- 绘制失败方角色（右半单排）——躺在地上 + 乌云下雨
+        for idx, pi in ipairs(loseTeam.members) do
+            local cx = contentX + halfW + idx * rightSpacing
+            local cy = gridStartY + 40
+
+            local pdata = G.players[pi]
+            if pdata then
+                local skinIdx = pdata.config.skinIndex or 1
+                local skin = G.skinsRuntime[skinIdx]
+                -- 脚下圆圈（椭圆阴影）
+                nvgBeginPath(nvg)
+                nvgEllipse(nvg, cx, cy + 22, 18, 7)
+                local pc = pdata.config.color
+                nvgFillColor(nvg, nvgRGBA(pc[1], pc[2], pc[3], 40))
+                nvgFill(nvg)
+                nvgBeginPath(nvg)
+                nvgEllipse(nvg, cx, cy + 22, 18, 7)
+                nvgStrokeColor(nvg, nvgRGBA(pc[1], pc[2], pc[3], 100))
+                nvgStrokeWidth(nvg, 1.5)
+                nvgStroke(nvg)
+                -- 失败姿势：旋转90度躺倒
+                nvgSave(nvg)
+                nvgTranslate(nvg, cx, cy + 10)
+                nvgRotate(nvg, math.rad(90))
+                nvgTranslate(nvg, -cx, -(cy + 10))
+                M.DrawSinglePlayer({
+                    sx = cx, sy = cy + 10,
+                    color = pdata.config.color,
+                    skin = skin,
+                    facing = 1,
+                    limbSwing = 0,
+                    armSwing = 0.3,  -- 手臂微微下垂
+                    inAir = false,
+                    isMoving = false,
+                    onGround = true,
+                    velY = 0,
+                    name = "",  -- 躺下时不显示名字
+                    scaleX = 1.0,
+                    scaleY = 1.0,
+                    showGlow = false,
+                    playerIndex = pi,
+                })
+                nvgRestore(nvg)
+
+                -- 乌云
+                local cloudX = cx
+                local cloudY = cy - 20
+                local cloudW = 30
+                nvgBeginPath(nvg)
+                nvgEllipse(nvg, cloudX, cloudY, cloudW, 10)
+                nvgEllipse(nvg, cloudX - 10, cloudY - 4, 14, 9)
+                nvgEllipse(nvg, cloudX + 10, cloudY - 3, 12, 8)
+                nvgEllipse(nvg, cloudX + 2, cloudY - 8, 13, 8)
+                nvgFillColor(nvg, nvgRGBA(80, 80, 100, 180))
+                nvgFill(nvg)
+
+                -- 雨滴
+                local t = G.globalTime or 0
+                for d = 1, 5 do
+                    local dropX = cloudX - 16 + d * 7
+                    local dropOff = ((t * 60 + d * 17) % 30)
+                    local dropY = cloudY + 10 + dropOff
+                    local dropAlpha = math.max(0, 200 - dropOff * 7)
+                    nvgBeginPath(nvg)
+                    nvgMoveTo(nvg, dropX, dropY)
+                    nvgLineTo(nvg, dropX - 1.5, dropY + 6)
+                    nvgLineTo(nvg, dropX + 1.5, dropY + 6)
+                    nvgClosePath(nvg)
+                    nvgFillColor(nvg, nvgRGBA(100, 140, 220, math.floor(dropAlpha)))
+                    nvgFill(nvg)
+                end
+            end
+        end
+    end
 end
 
 -- ============================================================================

@@ -197,6 +197,7 @@ local showPhotoTimer_ = 0
 local globalTime_ = 0  -- 全局累计时间（每帧累加dt，替代 os.clock()）
 local roundResult_ = {}
 local photoSnapshot_ = {}
+local bulletSnapshot_ = {}  -- 拍照时子弹位置快照
 local gameOver_ = false
 local winner_ = ""
 
@@ -213,7 +214,6 @@ local lobby_ = {
         { joined = false, skinIndex = 4, ready = false },
     },
     animTime = 0,
-    xButtonRects = {},
     -- 固定拍照区域（右侧偏下，塔前区域）
     photoZone = { x = 5.9, y = -1.6, width = CONFIG.PhotoWidth, height = CONFIG.PhotoHeight },
     -- 倒数计时
@@ -226,6 +226,8 @@ local lobby_ = {
     photoSnapshot = {},
     -- 提示闪烁
     warningFlash = 0,
+    -- 按键说明浮窗（UI.Button 控制）
+    showKeyHelp = false,
 }
 
 -- 分队展示状态
@@ -323,6 +325,7 @@ local function SyncGameState()
     G.playerTeam = playerTeam_
     G.roundResult = roundResult_
     G.photoSnapshot = photoSnapshot_
+    G.bulletSnapshot = bulletSnapshot_
     -- 编辑器打开时，从 G 回写到局部变量（编辑器通过 G 修改这些值）
     if Editors.skinEditorOpen then
         playerScale_ = G.playerScale or playerScale_
@@ -500,13 +503,13 @@ function Start()
     SubscribeToEvent("PhysicsBeginContact2D", "HandleBeginContact")
     SubscribeToEvent("PhysicsEndContact2D", "HandleEndContact")
     SubscribeToEvent("PhysicsUpdateContact2D", "HandleUpdateContact")
-    SubscribeToEvent("MouseButtonDown", "HandleMouseDown")
 
     -- 显示主界面（标题屏幕）
     gameState_ = "title"
     local titleRoot = TitleScreen.Create(function()
         -- 主界面结束后进入大厅
         gameState_ = "lobby"
+        SetLobbySelectUIVisible(true)
         print("=== Photo Rush 团队抓拍游戏启动 ===")
         print("按跳跃键加入: W / S / X / I / K / M / 8 / ↑")
         -- 播放淡入转场（竖条百叶窗收起）
@@ -814,6 +817,12 @@ function CreateUI()
 
     -- 左下角重新开始按钮
     CreateRestartButton()
+    -- 左上角按键说明按钮 + 浮窗
+    CreateKeyHelpUI()
+    -- X 踢人按钮（覆盖在 NanoVG 槽位上方）
+    CreateKickButtons()
+    -- 游戏启动时处于 title 状态，隐藏选人界面专属 UI
+    SetLobbySelectUIVisible(false)
 end
 
 --- 重新开始按钮（左下角）
@@ -842,6 +851,228 @@ function CreateRestartButton()
         end,
     }
     root:AddChild(restartBtn)
+end
+
+--- 左上角按键说明按钮 + 浮窗
+function CreateKeyHelpUI()
+    local root = UI.FindById("root")
+    if not root then return end
+
+    -- 构建玩家按键列表的子元素
+    local keyRows = {}
+    for i, pdata in ipairs(PLAYERS) do
+        local c = pdata.color
+        local keyStr = string.format("←%s  ↑%s  →%s",
+            GetKeyName(pdata.keys.left),
+            GetKeyName(pdata.keys.jump),
+            GetKeyName(pdata.keys.right))
+        table.insert(keyRows, UI.Panel {
+            flexDirection = "row",
+            alignItems = "center",
+            gap = 8,
+            children = {
+                UI.Label {
+                    text = pdata.name,
+                    fontSize = 12,
+                    fontColor = {c[1], c[2], c[3], 255},
+                    width = 30,
+                },
+                UI.Label {
+                    text = keyStr,
+                    fontSize = 12,
+                    fontColor = {220, 220, 240, 230},
+                },
+            }
+        })
+    end
+
+    -- 浮窗面板（默认隐藏，位置由 UpdateKickButtonLayout 每帧动态设置）
+    local popup = UI.Panel {
+        id = "keyHelpPopup",
+        visible = false,
+        position = "absolute",
+        top = 230,
+        left = 4,
+        padding = 12,
+        backgroundColor = {40, 20, 50, 235},
+        borderWidth = 2,
+        borderColor = {240, 100, 130, 200},
+        borderRadius = 10,
+        gap = 6,
+        children = {
+            UI.Label {
+                text = "按键说明",
+                fontSize = 13,
+                fontColor = {255, 200, 220, 255},
+                textAlign = "center",
+                width = "100%",
+                marginBottom = 4,
+            },
+            table.unpack(keyRows),
+        },
+    }
+
+    -- 按钮（位置由 UpdateKickButtonLayout 每帧动态设置）
+    local keyHelpBtn = UI.Button {
+        id = "keyHelpBtn",
+        text = "按键说明",
+        fontSize = 13,
+        position = "absolute",
+        top = 200,
+        left = 4,
+        paddingLeft = 14,
+        paddingRight = 14,
+        paddingTop = 6,
+        paddingBottom = 6,
+        backgroundColor = {255, 245, 250, 220},
+        borderWidth = 2,
+        borderColor = {240, 100, 130, 180},
+        borderRadius = 10,
+        textColor = {30, 30, 30, 255},
+        onClick = function(self)
+            local pop = UI.FindById("keyHelpPopup")
+            if not pop then return end
+            lobby_.showKeyHelp = not lobby_.showKeyHelp
+            pop:SetVisible(lobby_.showKeyHelp)
+            -- 切换按钮样式
+            if lobby_.showKeyHelp then
+                self:SetStyle({
+                    backgroundColor = {200, 80, 120, 230},
+                    textColor = {255, 255, 255, 255},
+                    borderColor = {160, 50, 90, 255},
+                })
+            else
+                self:SetStyle({
+                    backgroundColor = {255, 245, 250, 220},
+                    textColor = {30, 30, 30, 255},
+                    borderColor = {240, 100, 130, 180},
+                })
+            end
+        end,
+    }
+
+    root:AddChild(keyHelpBtn)
+    root:AddChild(popup)
+end
+
+--- X 踢人按钮（8个绝对定位 UI.Button，覆盖在 NanoVG 槽位上方）
+function CreateKickButtons()
+    local root = UI.FindById("root")
+    if not root then return end
+
+    lobby_.kickBtns = {}
+    for i = 1, 8 do
+        local idx = i  -- 闭包捕获
+        local btn = UI.Button {
+            id = "kickBtn" .. idx,
+            text = "✕",
+            fontSize = 12,
+            position = "absolute",
+            top = 0,
+            left = 0,
+            width = 22,
+            height = 22,
+            visible = false,
+            paddingLeft = 0,
+            paddingRight = 0,
+            paddingTop = 0,
+            paddingBottom = 0,
+            backgroundColor = {240, 100, 130, 220},
+            borderRadius = 11,
+            borderWidth = 0,
+            fontColor = {255, 255, 255, 250},
+            onClick = function(self)
+                local slot = lobby_.slots[idx]
+                if slot and slot.joined then
+                    -- 如果已准备（有物理角色），先移除角色
+                    if slot.ready then
+                        for pi, p in ipairs(players_) do
+                            if p.originalIndex == idx then
+                                p.node:Remove()
+                                table.remove(players_, pi)
+                                break
+                            end
+                        end
+                    end
+                    slot.ready = false
+                    slot.joined = false
+                    print(PLAYERS[idx].name .. " 被踢出大厅")
+                end
+            end,
+        }
+        root:AddChild(btn)
+        lobby_.kickBtns[i] = btn
+    end
+end
+
+--- 每帧更新 X 踢人按钮和按键说明按钮的位置（与 NanoVG 面板同步）
+function UpdateKickButtonLayout()
+    if not lobby_.kickBtns then return end
+    local sw, sh = screenW_, screenH_
+    local scale = UI.GetScale()  -- UI 坐标 = 物理像素 / scale
+
+    -- NanoVG 物理像素坐标（与 DrawLobby 中 section 4 相同的计算）
+    local slotW = sw * 0.065
+    local slotH = sh * 0.13
+    local gap = 8
+    local panelPad = 12
+    local nvgBtnSize = 18  -- NanoVG 中绘制的尺寸
+    local panelH = 2 * slotH + gap + panelPad * 2
+
+    for i = 1, 8 do
+        local btn = lobby_.kickBtns[i]
+        local slot = lobby_.slots[i]
+        if slot.joined then
+            local row = (i <= 4) and 0 or 1
+            local col = ((i - 1) % 4)
+            local sx = 4 + panelPad + col * (slotW + gap)
+            local sy = 4 + panelPad + row * (slotH + gap)
+            -- X按钮在槽位右上角
+            local bx = sx + slotW - nvgBtnSize - 1
+            local by = sy + 1
+            -- 转换为 UI 坐标
+            btn:SetStyle({ top = by / scale, left = bx / scale })
+            btn:SetVisible(true)
+        else
+            btn:SetVisible(false)
+        end
+    end
+
+    -- 按键说明按钮放在面板下方
+    local keyHelpBtn = UI.FindById("keyHelpBtn")
+    if keyHelpBtn then
+        local btnTop = (4 + panelH + 6) / scale  -- 面板底部 + 6px 间距
+        local btnLeft = 4 / scale
+        keyHelpBtn:SetStyle({ top = btnTop, left = btnLeft })
+    end
+    -- 按键说明浮窗也跟着调整
+    local popup = UI.FindById("keyHelpPopup")
+    if popup then
+        local popTop = (4 + panelH + 70) / scale  -- 按钮下方，留出足够间距不遮挡按钮
+        local popLeft = 4 / scale
+        popup:SetStyle({ top = popTop, left = popLeft })
+    end
+end
+
+--- 隐藏/显示选人阶段专属 UI（按键说明 + X踢人按钮）
+function SetLobbySelectUIVisible(visible)
+    -- 按键说明按钮
+    local keyHelpBtn = UI.FindById("keyHelpBtn")
+    if keyHelpBtn then keyHelpBtn:SetVisible(visible) end
+    -- 按键说明浮窗（隐藏时同时关闭）
+    if not visible then
+        local popup = UI.FindById("keyHelpPopup")
+        if popup then popup:SetVisible(false) end
+        lobby_.showKeyHelp = false
+    end
+    -- X 踢人按钮
+    if lobby_.kickBtns then
+        for i = 1, 8 do
+            if not visible then
+                lobby_.kickBtns[i]:SetVisible(false)
+            end
+        end
+    end
 end
 
 --- 显示重新开始确认弹窗
@@ -942,97 +1173,112 @@ function CreateTeamUI()
     local t1c = teams_[1].color
     local t2c = teams_[2].color
 
-    -- 可爱风格颜色（白底+柔和团队色边框）
-    local cuteBg1 = {255, 245, 250, 220}       -- 浅粉白背景（左队）
-    local cuteBg2 = {245, 250, 255, 220}       -- 浅蓝白背景（右队）
-    local cuteBorder1 = {t1c[1], t1c[2], t1c[3], 180}  -- 队伍色边框
-    local cuteBorder2 = {t2c[1], t2c[2], t2c[3], 180}
-
-    -- 构建左队成员行
-    local t1MemberRows = {}
+    -- 构建左队成员（单行：色点+名字+分数 紧凑横排）
+    local t1MemberItems = {}
     for _, pi in ipairs(teams_[1].members) do
         local pdata = PLAYERS[pi]
-        table.insert(t1MemberRows, UI.Panel {
-            flexDirection = "row", alignItems = "center", gap = 6,
+        table.insert(t1MemberItems, UI.Panel {
+            flexDirection = "row", alignItems = "center", gap = 3,
             children = {
-                -- 圆形标识
-                UI.Panel { width = 10, height = 10, borderRadius = 5, backgroundColor = pdata.color },
-                UI.Label { text = pdata.name, fontSize = 13, fontColor = {80, 60, 100, 255} },
-                UI.Label { id = "score" .. pi, text = "0", fontSize = 15, fontColor = {t1c[1], t1c[2], t1c[3], 255}, fontWeight = "bold" },
+                UI.Label { text = pdata.name, fontSize = 11, fontColor = {255, 255, 255, 230} },
+                UI.Panel { width = 6, height = 6, borderRadius = 3, backgroundColor = pdata.color },
+                UI.Label { id = "score" .. pi, text = "0", fontSize = 12, fontColor = {255, 255, 255, 255}, fontWeight = "bold" },
             }
         })
     end
+    local t1MemberRow = UI.Panel {
+        flexDirection = "row", gap = 6,
+        children = t1MemberItems,
+    }
 
-    -- 构建右队成员行
-    local t2MemberRows = {}
+    -- 构建右队成员（单行：色点+名字+分数 紧凑横排）
+    local t2MemberItems = {}
     for _, pi in ipairs(teams_[2].members) do
         local pdata = PLAYERS[pi]
-        table.insert(t2MemberRows, UI.Panel {
-            flexDirection = "row", alignItems = "center", justifyContent = "flex-end", gap = 6,
+        table.insert(t2MemberItems, UI.Panel {
+            flexDirection = "row", alignItems = "center", gap = 3,
             children = {
-                UI.Label { id = "score" .. pi, text = "0", fontSize = 15, fontColor = {t2c[1], t2c[2], t2c[3], 255}, fontWeight = "bold" },
-                UI.Label { text = pdata.name, fontSize = 13, fontColor = {100, 60, 80, 255} },
-                UI.Panel { width = 10, height = 10, borderRadius = 5, backgroundColor = pdata.color },
+                UI.Label { text = pdata.name, fontSize = 11, fontColor = {255, 255, 255, 230} },
+                UI.Panel { width = 6, height = 6, borderRadius = 3, backgroundColor = pdata.color },
+                UI.Label { id = "score" .. pi, text = "0", fontSize = 12, fontColor = {255, 255, 255, 255}, fontWeight = "bold" },
             }
         })
     end
+    local t2MemberRow = UI.Panel {
+        flexDirection = "row", gap = 6, justifyContent = "flex-end",
+        children = t2MemberItems,
+    }
 
-    -- 左队面板（圆角白底 + 柔和边框）
+    -- 左队面板（蓝/青色霓虹框 - 使用图片背景）
     local t1Panel = UI.Panel {
         id = "team1Panel",
         position = "absolute",
         top = 10, left = 10,
-        padding = 10, gap = 5,
-        backgroundColor = cuteBg1,
-        borderWidth = 2.5, borderColor = cuteBorder1, borderRadius = 12,
+        width = 160, height = 70,
+        borderRadius = 12,
+        backgroundImage = "image/frame_blue.png",
+        backgroundFit = "fill",
         pointerEvents = "none",
+        justifyContent = "center",
         children = {
-            -- 队伍标题行
+            -- 内容区域（叠加在图片上）
             UI.Panel {
-                flexDirection = "row", alignItems = "center", gap = 6,
-                marginBottom = 4,
+                padding = 10, gap = 3,
+                overflow = "hidden",
                 children = {
-                    UI.Panel { width = 8, height = 8, borderRadius = 4, backgroundColor = t1c },
-                    UI.Label {
-                        id = "team1Score",
-                        text = teams_[1].name .. " 0/" .. winScore,
-                        fontSize = 16,
-                        fontColor = {t1c[1], t1c[2], t1c[3], 255},
-                        fontWeight = "bold",
+                    -- 队伍标题行
+                    UI.Panel {
+                        flexDirection = "row", alignItems = "center", gap = 6,
+                        children = {
+                            UI.Label {
+                                id = "team1Score",
+                                text = teams_[1].name .. " 0/" .. winScore,
+                                fontSize = 15,
+                                fontColor = {255, 255, 255, 255},
+                                fontWeight = "bold",
+                            },
+                        }
                     },
+                    t1MemberRow,
                 }
             },
-            table.unpack(t1MemberRows),
         }
     }
 
-    -- 右队面板（圆角白底 + 柔和边框）
+    -- 右队面板（粉色霓虹框 - 使用图片背景）
     local t2Panel = UI.Panel {
         id = "team2Panel",
         position = "absolute",
         top = 10, right = 10,
-        padding = 10, gap = 5,
-        alignItems = "flex-end",
-        backgroundColor = cuteBg2,
-        borderWidth = 2.5, borderColor = cuteBorder2, borderRadius = 12,
+        width = 160, height = 70,
+        borderRadius = 12,
+        backgroundImage = "image/frame_pink.png",
+        backgroundFit = "fill",
         pointerEvents = "none",
+        justifyContent = "center",
         children = {
-            -- 队伍标题行
+            -- 内容区域（叠加在图片上）
             UI.Panel {
-                flexDirection = "row", alignItems = "center", gap = 6,
-                marginBottom = 4,
+                padding = 10, gap = 3,
+                overflow = "hidden",
+                alignItems = "flex-end",
                 children = {
-                    UI.Label {
-                        id = "team2Score",
-                        text = teams_[2].name .. " 0/" .. winScore,
-                        fontSize = 16,
-                        fontColor = {t2c[1], t2c[2], t2c[3], 255},
-                        fontWeight = "bold",
+                    -- 队伍标题行
+                    UI.Panel {
+                        flexDirection = "row", alignItems = "center", gap = 6,
+                        children = {
+                            UI.Label {
+                                id = "team2Score",
+                                text = teams_[2].name .. " 0/" .. winScore,
+                                fontSize = 15,
+                                fontColor = {255, 255, 255, 255},
+                                fontWeight = "bold",
+                            },
+                        }
                     },
-                    UI.Panel { width = 8, height = 8, borderRadius = 4, backgroundColor = t2c },
+                    t2MemberRow,
                 }
             },
-            table.unpack(t2MemberRows),
         }
     }
 
@@ -1173,6 +1419,8 @@ function HandleUpdate(eventType, eventData)
         Editors.ToggleEditorMenu()
     end
 
+
+
     -- 编辑器激活时暂停游戏
     if Editors.editorMenuOpen then
         return
@@ -1307,6 +1555,9 @@ function UpdateLobby(dt)
 
     -- === "select" 阶段 ===
 
+    -- 更新 X 踢人按钮位置（UI 组件方式，点击由 UI.Button onClick 处理）
+    UpdateKickButtonLayout()
+
     -- 按跳跃键加入/准备
     for i, slot in ipairs(lobby_.slots) do
         local keys = PLAYERS[i].keys
@@ -1378,6 +1629,10 @@ function UpdateLobby(dt)
         end
     end
 
+    -- 检测奇数玩家全到区域的情况
+    lobby_.oddPlayerWarning = (joinedCount >= 1 and joinedCount % 2 ~= 0
+        and joinedCount == readyCount and allInZone)
+
     -- 所有已加入玩家都确认且都在区域内
     if joinedCount >= 2 and joinedCount % 2 == 0 and joinedCount == readyCount and allInZone then
         -- 开始或继续倒数
@@ -1405,6 +1660,7 @@ end
 function LobbyTakePhoto()
     lobby_.phase = "flash"
     lobby_.flashTimer = 0.35
+    SetLobbySelectUIVisible(false)
 
     -- 记录快照（用于拍立得内渲染）
     lobby_.photoSnapshot = {}
@@ -1442,6 +1698,8 @@ function LobbyTakePhoto()
 end
 
 function StartGameFromLobby()
+    -- 隐藏选人阶段 UI
+    SetLobbySelectUIVisible(false)
     -- 重置大厅子阶段
     lobby_.phase = "select"
     lobby_.countdownActive = false
@@ -1473,49 +1731,7 @@ function StartGameFromLobby()
     print("=== 进入分队展示 ===")
 end
 
--- ============================================================================
--- 鼠标点击处理（大厅 X 按钮取消）
--- ============================================================================
-function HandleMouseDown(eventType, eventData)
-    if gameState_ ~= "lobby" then return end
-
-    local button = eventData["Button"]:GetInt()
-    if button ~= MOUSEB_LEFT then return end
-
-    local mx = eventData["X"]:GetInt()
-    local my = eventData["Y"]:GetInt()
-
-    -- DPR 转换：鼠标坐标是物理像素，NanoVG 绘图使用逻辑像素
-    local dpr = graphics:GetDPR()
-    mx = mx / dpr
-    my = my / dpr
-
-    -- 碰撞检测 X 按钮
-    for i, rect in pairs(lobby_.xButtonRects) do
-        if mx >= rect.x and mx <= rect.x + rect.w and
-           my >= rect.y and my <= rect.y + rect.h then
-            -- 点击了玩家 i 的 X 按钮
-            local slot = lobby_.slots[i]
-            if slot.joined then
-                if slot.ready then
-                    -- 已准备（已落下）→ 取消准备，移除物理体
-                    slot.ready = false
-                    local pi, _ = GetPlayerBySlot(i)
-                    if pi then
-                        players_[pi].node:Remove()
-                        table.remove(players_, pi)
-                    end
-                    print(PLAYERS[i].name .. " 取消准备（回到选皮肤）")
-                else
-                    -- 已加入但未准备 → 退出
-                    slot.joined = false
-                    print(PLAYERS[i].name .. " 退出大厅")
-                end
-            end
-            break
-        end
-    end
-end
+-- (鼠标点击处理已移至 UpdateLobby 中使用轮询方式，避免 UI 层拦截事件)
 
 -- ============================================================================
 -- 拔河玩法：玩家位置设置
@@ -2182,6 +2398,13 @@ function TakePhoto()
         }
     end
 
+    -- 子弹快照（拍照时子弹位置）
+    bulletSnapshot_ = {}
+    local bullets = Gameplay.GetBullets()
+    for _, b in ipairs(bullets) do
+        table.insert(bulletSnapshot_, { x = b.x, y = b.y, vx = b.vx, vy = b.vy })
+    end
+
     local gp = GAMEPLAY_DATA[unlock_.currentGameplayIndex]
 
     -- 真假相框揭晓动画：拍照后启动
@@ -2337,6 +2560,14 @@ function UpdateScoreUI()
     if t2Label then t2Label:SetText(teams_[2].name .. " " .. teams_[2].score .. "/" .. winScore) end
 end
 
+--- GM: 直接跳转到结算画面
+function GMSkipToGameOver()
+    if gameOver_ then return end
+    gameOver_ = true
+    winner_ = teams_[1].name  -- 默认蓝队胜
+    print("[GM] 跳转到结算画面")
+end
+
 function RestartGame()
     gameOver_ = false
     winner_ = ""
@@ -2368,13 +2599,13 @@ function RestartGame()
         lobby_.slots[i].ready = false
     end
     -- players_ 已在上方清理（Remove + 清空）
-    lobby_.xButtonRects = {}
     lobby_.phase = "select"
     lobby_.countdownActive = false
     lobby_.countdown = 5.0
     lobby_.warningFlash = 0
     lobby_.photoSnapshot = {}
     gameState_ = "lobby"
+    SetLobbySelectUIVisible(true)
     print("=== 返回大厅 ===")
 end
 
@@ -2510,8 +2741,6 @@ function DrawLobby()
     nvgStrokeWidth(nvg, 2.5)
     nvgStroke(nvg)
 
-    lobby_.xButtonRects = {}  -- 每帧重置碰撞矩形
-
     for i, slot in ipairs(lobby_.slots) do
         local row = (i <= 4) and 0 or 1
         local col = ((i - 1) % 4)
@@ -2590,19 +2819,7 @@ function DrawLobby()
                 nvgText(nvg, sx + slotW / 2, sy + slotH - 2, "← →", nil)
             end
 
-            -- X 按钮（右上角，圆形粉色）
-            local btnSize = 14
-            local bx = sx + slotW - btnSize - 2
-            local by = sy + 2
-            nvgBeginPath(nvg)
-            nvgCircle(nvg, bx + btnSize / 2, by + btnSize / 2, btnSize / 2)
-            nvgFillColor(nvg, nvgRGBA(240, 100, 130, 200))
-            nvgFill(nvg)
-            nvgFontSize(nvg, 10)
-            nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-            nvgFillColor(nvg, nvgRGBA(255, 255, 255, 240))
-            nvgText(nvg, bx + btnSize / 2, by + btnSize / 2, "✕", nil)
-            lobby_.xButtonRects[i] = { x = bx, y = by, w = btnSize, h = btnSize }
+            -- X 按钮由 UI.Button 组件渲染（CreateKickButtons），此处不再用 NanoVG 绘制
         else
             -- 未加入：显示按键提示（柔和紫色）
             nvgFontSize(nvg, 9)
@@ -2612,6 +2829,8 @@ function DrawLobby()
             nvgText(nvg, sx + slotW / 2, sy + slotH / 2, GetKeyName(pdata.keys.jump), nil)
         end
     end
+
+    -- 按键说明按钮+浮窗由 UI.Button 组件渲染（CreateKeyHelpUI），不再用 NanoVG
 
     -- === 5. 提示文字 + 倒数 ===
     nvgFontFace(nvg, "sans")
@@ -2676,6 +2895,28 @@ function DrawLobby()
         nvgFontSize(nvg, 32)
         nvgFillColor(nvg, nvgRGBA(100, 220, 240, 240))
         nvgText(nvg, sw / 2, sh / 2 + 60, "全员就位！即将拍照...", nil)
+    end
+
+    -- (C2) 奇数玩家全到拍照区域时的中央闪烁警告
+    if lobby_.oddPlayerWarning then
+        local flashT = lobby_.warningFlash * 5
+        local alpha = math.floor(180 + 75 * math.sin(flashT))
+        -- 半透明背景条
+        local boxW2, boxH2 = 460, 56
+        nvgBeginPath(nvg)
+        nvgRoundedRect(nvg, sw / 2 - boxW2 / 2, sh / 2 - boxH2 / 2, boxW2, boxH2, 12)
+        nvgFillColor(nvg, nvgRGBA(60, 10, 20, math.floor(alpha * 0.7)))
+        nvgFill(nvg)
+        nvgBeginPath(nvg)
+        nvgRoundedRect(nvg, sw / 2 - boxW2 / 2, sh / 2 - boxH2 / 2, boxW2, boxH2, 12)
+        nvgStrokeColor(nvg, nvgRGBA(240, 80, 100, alpha))
+        nvgStrokeWidth(nvg, 2)
+        nvgStroke(nvg)
+        -- 文字
+        nvgFontSize(nvg, 28)
+        nvgTextAlign(nvg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(nvg, nvgRGBA(255, 100, 120, alpha))
+        nvgText(nvg, sw / 2, sh / 2, "需要双数玩家才能进行游戏!", nil)
     end
 
     -- (D) 底部状态提示
@@ -3184,6 +3425,10 @@ function GetKeyName(key)
         [KEY_W] = "W", [KEY_S] = "S", [KEY_X] = "X", [KEY_I] = "I",
         [KEY_Q] = "Q", [KEY_A] = "A", [KEY_Z] = "Z", [KEY_U] = "U",
         [KEY_E] = "E", [KEY_D] = "D", [KEY_C] = "C", [KEY_O] = "O",
+        [KEY_J] = "J", [KEY_K] = "K", [KEY_L] = "L",
+        [KEY_N] = "N", [KEY_M] = "M", [KEY_COMMA] = ",",
+        [KEY_F] = "F", [KEY_G] = "G", [KEY_H] = "H",
+        [KEY_R] = "R", [KEY_T] = "T", [KEY_Y] = "Y",
     }
     return names[key] or "?"
 end

@@ -126,6 +126,16 @@ function M.CreateEditorMenu()
                             M.ToggleScoreGM()
                         end
                     },
+                    UI.Button {
+                        text = "跳转结算", variant = "outline", width = "100%", height = 38,
+                        fontColor = {255, 180, 80, 255},
+                        borderColor = {255, 180, 80, 200},
+                        onClick = function()
+                            M.editorMenuOpen = false
+                            editorMenuPanel_:SetVisible(false)
+                            if GMSkipToGameOver then GMSkipToGameOver() end
+                        end
+                    },
                 }
             }
         }

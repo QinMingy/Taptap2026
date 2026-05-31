@@ -242,7 +242,7 @@ M.GAMEPLAY_DATA = {
         weight = 20,
         description = "躲避从天而降的弹幕，被击中将无法出现在照片中",
         unlockThreshold = 6,
-        resetPosition = false,
+        resetPosition = true,
         prepTime = 5.0,
         prepText = "躲避子弹！",
         photoZone = nil,
@@ -334,9 +334,9 @@ M.PILL_ENLARGE_DURATION = 2.0 -- 放大持续时间（秒）
 -- ============================================================================
 -- 子弹躲避配置
 -- ============================================================================
-M.BULLET_COUNT = 3            -- 子弹数量
+M.BULLET_COUNT = 4            -- 子弹数量
 M.BULLET_RADIUS = 0.2         -- 子弹半径（约为玩家半径的一半）
-M.BULLET_SPEED = 4.5          -- 子弹速度（不要太快）
+M.BULLET_SPEED = 5.4          -- 子弹速度（1.2倍）
 M.BULLET_HIT_DIST = 0.55      -- 子弹命中玩家距离（子弹半径+玩家半径）
 M.BULLET_FLASH_DURATION = 0.8 -- 被击中后闪烁持续时间（秒）
 M.BULLET_FLASH_FREQ = 12      -- 闪烁频率（Hz）

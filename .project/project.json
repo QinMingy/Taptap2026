@@ -5,19 +5,48 @@
     "id": "1641712595"
   },
   "entry": "main.lua",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "taptap_publish": {
-    "title": "<game title, required>",
-    "description": "<game description>",
-    "category": "<game category: rpg, casual, action, strategy, simulation, trivia, arcade, adventure, card, sports, racing, puzzle, educational, music, word, board>",
+    "developer_id": 330187,
+    "title": "别抢我镜头",
+    "description": "五、四、三、二、一！茄子！\n和小伙伴们一起斗智斗勇，抢夺镜头，赢得游戏！",
+    "category": "casual",
     "screen_orientation": "landscape",
     "collection_type": "sce",
-    "trial_note": "<developer's note>",
-    "app_platforms": "1,2"
+    "trial_note": "感谢老大玩我们的游戏喵！关注我们谢谢喵~\n游戏还未完善，有任何建议欢迎随时反馈喵~",
+    "app_platforms": "1,2",
+    "app_id": 864996,
+    "miniapp_id": "tapmcunivbl0z9nwxu",
+    "gameplay_demo_video_source": "https://tapcode-sce.spark.xd.com/videos/d5971d5a-9798-481a-b9b9-1bf3a682e0eb/1780202495477-uploaded_215460bd.mp4"
   },
   "assets": {
-    "icon": "",
-    "screenshots": [],
-    "promotional_image": ""
+    "icon": "./game_material/icon.png",
+    "screenshots": [
+      "./game_material/screenshot_1.png",
+      "./game_material/screenshot_2.png",
+      "./game_material/screenshot_3.png",
+      "./game_material/screenshot_4.png"
+    ],
+    "promotional_image": "./game_material/promotional.png",
+    "icon_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/icon.png",
+    "promotional_image_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/promotional.png",
+    "screenshot_urls": [
+      "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/screenshot_1.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/screenshot_2.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/screenshot_3.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/screenshot_4.png"
+    ],
+    "cover_horizontal": "./game_material/cover_horizontal.png",
+    "cover_horizontal_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/cover_horizontal.png",
+    "cover_vertical": "./game_material/cover_vertical.png",
+    "cover_vertical_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/cover_vertical.png"
+  },
+  "metadata": {
+    "updated_at": "2026-05-31T04:45:17.088Z",
+    "promo_dependent_hash": "f61575f251b3c133020c7491b279ea30"
+  },
+  "test_qrcode": {
+    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_uzi1_1780201619781.png",
+    "generated_at": "2026-05-31T04:26:59.914Z"
   }
 }
