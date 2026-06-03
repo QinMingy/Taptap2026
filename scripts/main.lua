@@ -439,7 +439,7 @@ function CheckUnlockAndPrepareRound()
         print(string.format("[GM] 强制使用玩法: %s", GAMEPLAY_DATA[selectedGameplay].name))
     else
         local unlockedGameplays = Gameplay.GetUnlockedGameplays(unlockValue)
-        selectedGameplay = Gameplay.SelectGameplayByWeight(unlockedGameplays)
+        selectedGameplay = Gameplay.SelectGameplayByWeight(unlockedGameplays, unlock_.currentGameplayIndex)
         local gp = GAMEPLAY_DATA[selectedGameplay]
         print(string.format("[Unlock] 本轮玩法: %s (权重 %d, 已解锁 %d 个玩法)", gp.name, gp.weight, #unlockedGameplays))
     end

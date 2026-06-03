@@ -5,11 +5,11 @@
     "id": "1641712595"
   },
   "entry": "main.lua",
-  "version": "1.0.2",
+  "version": "1.0.7",
   "taptap_publish": {
     "developer_id": 330187,
     "title": "别抢我镜头",
-    "description": "五、四、三、二、一！茄子！\n和小伙伴们一起斗智斗勇，抢夺镜头，赢得游戏！",
+    "description": "游戏为多人同屏派对游戏，暂时只支持PC游玩体验。\n五、四、三、二、一！茄子！\n和小伙伴们一起斗智斗勇，抢夺镜头，赢得游戏！\n游戏中玩家将分为两个队伍进行竞争，在不同关卡下抢夺入镜机会，最终优先达到目标的一方获胜。",
     "category": "casual",
     "screen_orientation": "landscape",
     "collection_type": "sce",
@@ -24,8 +24,7 @@
     "screenshots": [
       "./game_material/screenshot_1.png",
       "./game_material/screenshot_2.png",
-      "./game_material/screenshot_3.png",
-      "./game_material/screenshot_4.png"
+      "./game_material/screenshot_3.png"
     ],
     "promotional_image": "./game_material/promotional.png",
     "icon_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/icon.png",
@@ -33,8 +32,7 @@
     "screenshot_urls": [
       "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/screenshot_1.png",
       "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/screenshot_2.png",
-      "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/screenshot_3.png",
-      "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/screenshot_4.png"
+      "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/screenshot_3.png"
     ],
     "cover_horizontal": "./game_material/cover_horizontal.png",
     "cover_horizontal_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/cover_horizontal.png",
@@ -42,11 +40,11 @@
     "cover_vertical_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_uzi1/cover_vertical.png"
   },
   "metadata": {
-    "updated_at": "2026-05-31T04:45:17.088Z",
+    "updated_at": "2026-06-03T13:43:55.121Z",
     "promo_dependent_hash": "f61575f251b3c133020c7491b279ea30"
   },
   "test_qrcode": {
-    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_uzi1_1780201619781.png",
-    "generated_at": "2026-05-31T04:26:59.914Z"
+    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_uzi1_1780403864152.png",
+    "generated_at": "2026-06-02T12:37:44.270Z"
   }
 }
